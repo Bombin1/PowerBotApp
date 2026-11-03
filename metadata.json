@@ -1,0 +1,6 @@
+{
+  "name": "PowerBot",
+  "description": "Моніторинг наявності світла, графіки відключень (ГПВ) для міст України, сповіщення та зв'язок з Telegram-ботом",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
