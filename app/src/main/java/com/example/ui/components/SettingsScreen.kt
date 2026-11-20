@@ -536,6 +536,10 @@ fun SettingsScreen(
                                     }
                                     Spacer(modifier = Modifier.height(10.dp))
                                     if (!state.release.apkDownloadUrl.isNullOrBlank()) {
+                                        val sizeMbText = if (state.release.apkSizeBytes > 0L) {
+                                            val mb = state.release.apkSizeBytes / (1024f * 1024f)
+                                            String.format(java.util.Locale.US, " (%.1f МБ)", mb)
+                                        } else ""
                                         Button(
                                             onClick = { viewModel.downloadAndInstallUpdate(state.release) },
                                             modifier = Modifier
@@ -550,7 +554,7 @@ fun SettingsScreen(
                                                 modifier = Modifier.size(16.dp)
                                             )
                                             Spacer(modifier = Modifier.width(6.dp))
-                                            Text("Завантажити та встановити (${state.release.versionName})")
+                                            Text("Оновити до ${state.release.versionName}$sizeMbText")
                                         }
                                     } else {
                                         OutlinedButton(

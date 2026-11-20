@@ -686,6 +686,29 @@ class ExampleUnitTest {
         assertEquals("2 год", PowerStatsHelper.formatDurationHoursMinutesUk(120L))
         assertEquals("2 год 15 хв", PowerStatsHelper.formatDurationHoursMinutesUk(135L))
     }
+
+    @Test
+    fun testGitHubUpdater_FallbackRepoApkAndGradleParsing() {
+        val candidates = GitHubUpdater.buildFallbackApkCandidates("v3.5.4")
+        assertEquals(
+            listOf(
+                "https://raw.githubusercontent.com/Bombin1/PowerBotApp/v3.5.4/PowerBot.apk",
+                "https://raw.githubusercontent.com/Bombin1/PowerBotApp/v3.5.4/app-debug.apk",
+                "https://raw.githubusercontent.com/Bombin1/PowerBotApp/main/PowerBot.apk",
+                "https://raw.githubusercontent.com/Bombin1/PowerBotApp/main/app-debug.apk"
+            ),
+            candidates
+        )
+
+        val gradleSnippet = """
+            defaultConfig {
+              applicationId = "com.aistudio.powerbot.ukrlgt"
+              versionCode = 354
+              versionName = "3.5.4"
+            }
+        """.trimIndent()
+        assertEquals("3.5.4", GitHubUpdater.parseGradleVersionName(gradleSnippet))
+    }
 }
 
 

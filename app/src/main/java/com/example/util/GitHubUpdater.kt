@@ -42,6 +42,8 @@ object GitHubUpdater {
 
     const val RELEASES_API_URL = "https://api.github.com/repos/Bombin1/PowerBotApp/releases/latest"
     const val RELEASES_PAGE_URL = "https://github.com/Bombin1/PowerBotApp/releases"
+    const val RAW_BASE_URL = "https://raw.githubusercontent.com/Bombin1/PowerBotApp"
+    const val MAIN_GRADLE_URL = "$RAW_BASE_URL/main/app/build.gradle.kts"
 
     /**
      * Parses version strings like "v3.5.1", "3.5.2", "v4.0" into integer segments.
@@ -72,6 +74,23 @@ object GitHubUpdater {
             if (r < c) return false
         }
         return false
+    }
+
+    fun buildFallbackApkCandidates(tagName: String): List<String> {
+        val cleanTag = tagName.trim()
+        val candidates = mutableListOf<String>()
+        if (cleanTag.isNotBlank()) {
+            candidates.add("$RAW_BASE_URL/$cleanTag/PowerBot.apk")
+            candidates.add("$RAW_BASE_URL/$cleanTag/app-debug.apk")
+        }
+        candidates.add("$RAW_BASE_URL/main/PowerBot.apk")
+        candidates.add("$RAW_BASE_URL/main/app-debug.apk")
+        return candidates.distinct()
+    }
+
+    fun parseGradleVersionName(gradleContent: String): String? {
+        val regex = Regex("""versionName\s*=\s*["']([^"']+)["']""")
+        return regex.find(gradleContent)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() }
     }
 
     fun parseReleaseJson(jsonString: String): GitHubRelease {
@@ -112,6 +131,69 @@ object GitHubUpdater {
         )
     }
 
+    private fun probeApkUrl(urlString: String): Long? {
+        var connection: HttpURLConnection? = null
+        return try {
+            val url = URL(urlString)
+            connection = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "HEAD"
+                instanceFollowRedirects = true
+                connectTimeout = 8000
+                readTimeout = 8000
+                setRequestProperty("User-Agent", "PowerBot-Android/${BuildConfig.VERSION_NAME}")
+            }
+            val code = connection.responseCode
+            if (code in 200..299) {
+                val len = connection.getHeaderField("Content-Length")?.toLongOrNull() ?: connection.contentLength.toLong()
+                if (len <= 0L || len > 100_000L) len.coerceAtLeast(0L) else null
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            null
+        } finally {
+            connection?.disconnect()
+        }
+    }
+
+    private fun resolveRepoApk(tagName: String): Triple<String, String, Long>? {
+        for (candidate in buildFallbackApkCandidates(tagName)) {
+            val size = probeApkUrl(candidate)
+            if (size != null) {
+                val verSuffix = tagName.ifBlank { "latest" }
+                val fileName = if (candidate.endsWith("PowerBot.apk", ignoreCase = true)) {
+                    "PowerBot-$verSuffix.apk"
+                } else {
+                    "PowerBot-$verSuffix-debug.apk"
+                }
+                return Triple(candidate, fileName, size)
+            }
+        }
+        return null
+    }
+
+    private fun fetchMainBranchVersion(): String? {
+        var connection: HttpURLConnection? = null
+        return try {
+            connection = (URL(MAIN_GRADLE_URL).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 8000
+                readTimeout = 8000
+                setRequestProperty("User-Agent", "PowerBot-Android/${BuildConfig.VERSION_NAME}")
+            }
+            if (connection.responseCode in 200..299) {
+                val content = connection.inputStream.bufferedReader().use { it.readText() }
+                parseGradleVersionName(content)
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            null
+        } finally {
+            connection?.disconnect()
+        }
+    }
+
     suspend fun fetchLatestRelease(): Result<GitHubRelease> = withContext(Dispatchers.IO) {
         var connection: HttpURLConnection? = null
         try {
@@ -125,13 +207,46 @@ object GitHubUpdater {
             }
 
             val code = connection.responseCode
-            if (code in 200..299) {
+            var release: GitHubRelease? = if (code in 200..299) {
                 val resp = connection.inputStream.bufferedReader().use { it.readText() }
-                Result.success(parseReleaseJson(resp))
+                parseReleaseJson(resp)
             } else {
-                val err = connection.errorStream?.bufferedReader()?.use { it.readText() } ?: "HTTP $code"
-                Result.failure(Exception("Помилка GitHub API ($code): $err"))
+                null
             }
+
+            // Fallback: check if main branch has a newer version (e.g. if release wasn't tagged yet)
+            val mainVersion = fetchMainBranchVersion()
+            if (mainVersion != null && (release == null || isNewerVersion(mainVersion, release.versionName))) {
+                release = GitHubRelease(
+                    tagName = "v$mainVersion",
+                    versionName = mainVersion,
+                    releaseName = "PowerBot v$mainVersion",
+                    changelog = release?.changelog ?: "Оновлення додатка з гілки main на GitHub.",
+                    htmlUrl = RELEASES_PAGE_URL,
+                    apkDownloadUrl = null,
+                    apkFileName = null,
+                    apkSizeBytes = 0L
+                )
+            }
+
+            if (release == null) {
+                val err = connection.errorStream?.bufferedReader()?.use { it.readText() } ?: "HTTP $code"
+                return@withContext Result.failure(Exception("Помилка GitHub API ($code): $err"))
+            }
+
+            // If GitHub release has no attached .apk asset, automatically resolve PowerBot.apk / app-debug.apk from the repo
+            if (release.apkDownloadUrl.isNullOrBlank()) {
+                val resolved = resolveRepoApk(release.tagName)
+                if (resolved != null) {
+                    release = release.copy(
+                        apkDownloadUrl = resolved.first,
+                        apkFileName = resolved.second,
+                        apkSizeBytes = resolved.third
+                    )
+                }
+            }
+
+            Result.success(release)
         } catch (e: Exception) {
             Result.failure(Exception("Не вдалося перевірити оновлення: ${e.message ?: "немає мережі"}"))
         } finally {
@@ -204,6 +319,16 @@ object GitHubUpdater {
                     }
                     output.flush()
                 }
+            }
+
+            // Verify the downloaded file is a valid APK (ZIP archive starts with "PK")
+            val isValidApk = outFile.exists() && outFile.length() > 100_000L && outFile.inputStream().use {
+                val hdr = ByteArray(2)
+                it.read(hdr) == 2 && hdr[0] == 0x50.toByte() && hdr[1] == 0x4B.toByte()
+            }
+            if (!isValidApk) {
+                outFile.delete()
+                return@withContext Result.failure(Exception("Завантажений файл не є коректним APK-пакетом"))
             }
 
             onProgress(100)
