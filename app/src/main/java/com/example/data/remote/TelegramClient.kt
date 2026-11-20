@@ -22,6 +22,68 @@ data class TgUpdate(
 
 object TelegramClient {
 
+    private val channelChatCache = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
+    fun buildChannelCommandInlineKeyboard(): JSONArray {
+        return JSONArray().apply {
+            put(JSONArray().apply {
+                put(JSONObject().apply {
+                    put("text", "💡 Перевірити наявність")
+                    put("callback_data", "cmd_status")
+                })
+            })
+            put(JSONArray().apply {
+                put(JSONObject().apply {
+                    put("text", "📊 Статистика")
+                    put("callback_data", "cmd_stats")
+                })
+                put(JSONObject().apply {
+                    put("text", "ℹ️ Інфо")
+                    put("callback_data", "cmd_info")
+                })
+            })
+        }
+    }
+
+    private suspend fun isChannelChat(botToken: String, chatId: String): Boolean = withContext(Dispatchers.IO) {
+        val cleanId = chatId.trim()
+        channelChatCache[cleanId]?.let { return@withContext it }
+        var connection: HttpURLConnection? = null
+        try {
+            val cleanToken = botToken.trim()
+            val encodedChatId = java.net.URLEncoder.encode(cleanId, "UTF-8")
+            val url = URL("https://api.telegram.org/bot$cleanToken/getChat?chat_id=$encodedChatId")
+            connection = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 5000
+                readTimeout = 5000
+            }
+            if (connection.responseCode in 200..299) {
+                val resp = connection.inputStream.bufferedReader().use { it.readText() }
+                val json = JSONObject(resp)
+                val type = json.optJSONObject("result")?.optString("type", "") ?: ""
+                val isChannel = type == "channel"
+                channelChatCache[cleanId] = isChannel
+                return@withContext isChannel
+            }
+        } catch (e: Exception) {
+            // Do not cache transient failures
+        } finally {
+            connection?.disconnect()
+        }
+        false
+    }
+
+    suspend fun deleteWebhook(botToken: String): Boolean = withContext(Dispatchers.IO) {
+        if (botToken.isBlank()) return@withContext false
+        val cleanToken = botToken.trim()
+        val urlString = "https://api.telegram.org/bot$cleanToken/deleteWebhook"
+        val payload = JSONObject().apply {
+            put("drop_pending_updates", false)
+        }
+        postJson(urlString, payload, 8000).isSuccess
+    }
+
     private suspend fun postJson(urlString: String, payload: JSONObject, timeoutMs: Int = 12000): Result<String> =
         withContext(Dispatchers.IO) {
             var connection: HttpURLConnection? = null
@@ -58,7 +120,8 @@ object TelegramClient {
         botToken: String,
         chatId: String,
         text: String,
-        withKeyboard: Boolean = false
+        withKeyboard: Boolean = false,
+        forceInlineForChannel: Boolean? = null
     ): Result<Boolean> = withContext(Dispatchers.IO) {
         if (botToken.isBlank() || chatId.isBlank()) {
             return@withContext Result.failure(IllegalArgumentException("Bot Token або Chat ID порожні"))
@@ -68,32 +131,48 @@ object TelegramClient {
         val cleanChatId = chatId.trim()
         val urlString = "https://api.telegram.org/bot$cleanToken/sendMessage"
 
-        val payload = JSONObject().apply {
+        val useInline = withKeyboard && (forceInlineForChannel ?: isChannelChat(cleanToken, cleanChatId))
+
+        fun buildPayload(useMarkdown: Boolean): JSONObject = JSONObject().apply {
             put("chat_id", cleanChatId)
             put("text", text)
-            put("parse_mode", "Markdown")
+            if (useMarkdown) {
+                put("parse_mode", "Markdown")
+            }
             put("disable_web_page_preview", true)
 
             if (withKeyboard) {
-                val keyboard = JSONArray().apply {
-                    put(JSONArray().apply {
-                        put(JSONObject().apply { put("text", "💡 Перевірити наявність") })
+                if (useInline) {
+                    put("reply_markup", JSONObject().apply {
+                        put("inline_keyboard", buildChannelCommandInlineKeyboard())
                     })
-                    put(JSONArray().apply {
-                        put(JSONObject().apply { put("text", "📊 Статистика") })
-                        put(JSONObject().apply { put("text", "ℹ️ Інфо") })
+                } else {
+                    val keyboard = JSONArray().apply {
+                        put(JSONArray().apply {
+                            put(JSONObject().apply { put("text", "💡 Перевірити наявність") })
+                        })
+                        put(JSONArray().apply {
+                            put(JSONObject().apply { put("text", "📊 Статистика") })
+                            put(JSONObject().apply { put("text", "ℹ️ Інфо") })
+                        })
+                    }
+
+                    put("reply_markup", JSONObject().apply {
+                        put("keyboard", keyboard)
+                        put("resize_keyboard", true)
+                        put("is_persistent", true)
                     })
                 }
-
-                put("reply_markup", JSONObject().apply {
-                    put("keyboard", keyboard)
-                    put("resize_keyboard", true)
-                    put("is_persistent", true)
-                })
             }
         }
 
-        val res = postJson(urlString, payload)
+        var res = postJson(urlString, buildPayload(useMarkdown = true))
+        if (res.isFailure) {
+            val errMsg = res.exceptionOrNull()?.message ?: ""
+            if (errMsg.contains("400") && errMsg.contains("parse", ignoreCase = true)) {
+                res = postJson(urlString, buildPayload(useMarkdown = false))
+            }
+        }
         if (res.isSuccess) Result.success(true)
         else Result.failure(res.exceptionOrNull() ?: Exception("Помилка відправки"))
     }
@@ -112,17 +191,25 @@ object TelegramClient {
         val cleanChatId = chatId.trim()
         val urlString = "https://api.telegram.org/bot$cleanToken/sendMessage"
 
-        val payload = JSONObject().apply {
+        fun buildPayload(useMarkdown: Boolean) = JSONObject().apply {
             put("chat_id", cleanChatId)
             put("text", text)
-            put("parse_mode", "Markdown")
+            if (useMarkdown) {
+                put("parse_mode", "Markdown")
+            }
             put("disable_web_page_preview", true)
             put("reply_markup", JSONObject().apply {
                 put("inline_keyboard", inlineKeyboard)
             })
         }
 
-        val res = postJson(urlString, payload)
+        var res = postJson(urlString, buildPayload(useMarkdown = true))
+        if (res.isFailure) {
+            val errMsg = res.exceptionOrNull()?.message ?: ""
+            if (errMsg.contains("400") && errMsg.contains("parse", ignoreCase = true)) {
+                res = postJson(urlString, buildPayload(useMarkdown = false))
+            }
+        }
         if (res.isSuccess) Result.success(true)
         else Result.failure(res.exceptionOrNull() ?: Exception("Помилка відправки"))
     }
@@ -139,11 +226,13 @@ object TelegramClient {
         val cleanToken = botToken.trim()
         val urlString = "https://api.telegram.org/bot$cleanToken/editMessageText"
 
-        val payload = JSONObject().apply {
+        fun buildPayload(useMarkdown: Boolean) = JSONObject().apply {
             put("chat_id", chatId)
             put("message_id", messageId)
             put("text", text)
-            put("parse_mode", "Markdown")
+            if (useMarkdown) {
+                put("parse_mode", "Markdown")
+            }
             put("disable_web_page_preview", true)
             if (inlineKeyboard != null) {
                 put("reply_markup", JSONObject().apply {
@@ -152,7 +241,13 @@ object TelegramClient {
             }
         }
 
-        val res = postJson(urlString, payload)
+        var res = postJson(urlString, buildPayload(useMarkdown = true))
+        if (res.isFailure) {
+            val errMsg = res.exceptionOrNull()?.message ?: ""
+            if (errMsg.contains("400") && errMsg.contains("parse", ignoreCase = true)) {
+                res = postJson(urlString, buildPayload(useMarkdown = false))
+            }
+        }
         if (res.isSuccess) Result.success(true)
         else Result.failure(res.exceptionOrNull() ?: Exception("Помилка редагування"))
     }
@@ -307,7 +402,8 @@ object TelegramClient {
                     readTimeout = (timeoutSeconds + 10) * 1000
                 }
 
-                if (connection.responseCode in 200..299) {
+                val code = connection.responseCode
+                if (code in 200..299) {
                     val resp = connection.inputStream.bufferedReader().use { it.readText() }
                     val json = JSONObject(resp)
                     if (json.optBoolean("ok", false)) {
@@ -329,6 +425,10 @@ object TelegramClient {
                                 val chatId = chat?.optLong("id", 0L) ?: fromUserId
                                 val chatType = chat?.optString("type", "private") ?: "private"
                                 val data = cbObj.optString("data", "")
+
+                                if (chatId != 0L && chatType.isNotBlank()) {
+                                    channelChatCache[chatId.toString()] = (chatType == "channel")
+                                }
 
                                 if (chatId != 0L && data.isNotBlank()) {
                                     updates.add(
@@ -360,9 +460,14 @@ object TelegramClient {
                                 val chatId = chat?.optLong("id", 0L) ?: 0L
                                 val chatType = chat?.optString("type", "") ?: ""
                                 val text = msgObj.optString("text", "")
+                                    .ifBlank { msgObj.optString("caption", "") }
                                 val from = msgObj.optJSONObject("from")
                                 val fromUserId = from?.optLong("id", 0L) ?: 0L
                                 val fromUser = from?.optString("username", "") ?: ""
+
+                                if (chatId != 0L && chatType.isNotBlank()) {
+                                    channelChatCache[chatId.toString()] = (chatType == "channel")
+                                }
 
                                 if (chatId != 0L && text.isNotBlank()) {
                                     updates.add(
@@ -380,9 +485,15 @@ object TelegramClient {
                             }
                         }
                     }
+                } else {
+                    if (code == 409) {
+                        // Active webhook conflicts with getUpdates - remove webhook and recover
+                        deleteWebhook(cleanToken)
+                    }
+                    kotlinx.coroutines.delay(2000)
                 }
             } catch (e: Exception) {
-                // Ignore transient network errors during long-polling
+                kotlinx.coroutines.delay(2000)
             } finally {
                 connection?.disconnect()
             }

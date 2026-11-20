@@ -230,19 +230,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun refreshTelegramPolling() {
+        if (preferences.backgroundServiceEnabled) {
+            PowerMonitorService.startService(getApplication())
+        }
+    }
+
     fun clearHistory() {
         viewModelScope.launch(Dispatchers.IO) {
+            preferences.journalResetTimeMs = System.currentTimeMillis()
             dao.clearAll()
         }
     }
 
     fun calculateMonthStats(events: List<PowerEvent>, monthKey: MonthKey): MonthStats {
-        val ongoingStart = if (preferences.lastPowerState == false) preferences.lastStateChangeTime else null
+        val powerState = preferences.lastPowerState
+        val stateStart = maxOf(preferences.lastStateChangeTime, preferences.journalResetTimeMs)
         return PowerStatsHelper.calculateMonthStats(
             events = events,
             monthKey = monthKey,
             nowMs = System.currentTimeMillis(),
-            ongoingOutageStartMs = ongoingStart
+            ongoingPowerState = powerState,
+            ongoingStateStartMs = if (powerState != null) stateStart else null
         )
     }
 

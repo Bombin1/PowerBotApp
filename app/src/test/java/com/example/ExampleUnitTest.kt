@@ -636,6 +636,57 @@ class ExampleUnitTest {
             release.apkDownloadUrl
         )
     }
+
+    /**
+     * v3.5.3 Критерій 3: Місячна статистика рахує лише фактичний відстежуваний час (не з 1-го числа місяця),
+     * і форматує тривалість у годинах і хвилинах ("9 хв", "1 год 15 хв").
+     */
+    @Test
+    fun testV353_MonthlyStats_AccurateOnlineAndMinutesFormat() {
+        val tz = TimeZone.getTimeZone("Europe/Kyiv")
+
+        fun makeTime(year: Int, month: Int, day: Int, hour: Int, minute: Int): Long {
+            return Calendar.getInstance(tz).apply {
+                set(year, month, day, hour, minute, 0)
+                set(Calendar.MILLISECOND, 0)
+            }.timeInMillis
+        }
+
+        // Nov 20: app started at 14:00, outage 15:00..15:09 (9 min), now is 16:00 (41 min online since 15:09? wait: 16:00 - 15:09 = 51 min)
+        val disconnectAt = makeTime(2026, Calendar.NOVEMBER, 20, 15, 0)
+        val reconnectAt = makeTime(2026, Calendar.NOVEMBER, 20, 15, 9)
+        val nowMs = makeTime(2026, Calendar.NOVEMBER, 20, 16, 0)
+
+        val events = listOf(
+            PowerEvent(id = 2, timestamp = reconnectAt, eventType = "POWER_CONNECTED", batteryPercent = 85, temperatureCelsius = 25f, durationMinutes = 9),
+            PowerEvent(id = 1, timestamp = disconnectAt, eventType = "POWER_DISCONNECTED", batteryPercent = 90, temperatureCelsius = 25f, durationMinutes = 60)
+        )
+
+        val stats = PowerStatsHelper.calculateMonthStats(
+            events = events,
+            monthKey = MonthKey(2026, Calendar.NOVEMBER),
+            nowMs = nowMs,
+            ongoingPowerState = true,
+            ongoingStateStartMs = reconnectAt,
+            timeZone = tz
+        )
+
+        // Online: 60 min (14:00-15:00) + 51 min (15:09-16:00) = 111 min = 1 год 51 хв (NOT 474 hours!)
+        assertEquals(111L, stats.onlineMinutes)
+        assertEquals("1 год 51 хв", PowerStatsHelper.formatDurationHoursMinutesUk(stats.onlineMinutes))
+
+        // Outage: 9 min = "9 хв" (NOT "0.1 год" / "0.9 год")
+        assertEquals(9L, stats.outageMinutes)
+        assertEquals("9 хв", PowerStatsHelper.formatDurationHoursMinutesUk(stats.outageMinutes))
+        assertEquals(1, stats.outageCount)
+
+        // Formatting edge cases
+        assertEquals("0 хв", PowerStatsHelper.formatDurationHoursMinutesUk(0L))
+        assertEquals("54 хв", PowerStatsHelper.formatDurationHoursMinutesUk(54L))
+        assertEquals("2 год", PowerStatsHelper.formatDurationHoursMinutesUk(120L))
+        assertEquals("2 год 15 хв", PowerStatsHelper.formatDurationHoursMinutesUk(135L))
+    }
 }
+
 
 

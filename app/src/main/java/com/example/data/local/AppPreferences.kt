@@ -85,6 +85,14 @@ class AppPreferences(context: Context) {
         get() = prefs.getLong("last_telegram_update_id", 0L)
         set(value) = prefs.edit().putLong("last_telegram_update_id", value).apply()
 
+    var lastTelegramTokenHash: Int
+        get() = prefs.getInt("last_telegram_token_hash", 0)
+        set(value) = prefs.edit().putInt("last_telegram_token_hash", value).apply()
+
+    var journalResetTimeMs: Long
+        get() = prefs.getLong("journal_reset_time_ms", 0L)
+        set(value) = prefs.edit().putLong("journal_reset_time_ms", value).apply()
+
     var telegramFirstRunNotified: Boolean
         get() = prefs.getBoolean("telegram_first_run_notified", false)
         set(value) = prefs.edit().putBoolean("telegram_first_run_notified", value).apply()

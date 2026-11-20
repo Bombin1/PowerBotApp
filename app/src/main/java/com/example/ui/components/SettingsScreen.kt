@@ -167,6 +167,7 @@ fun SettingsScreen(
                             onCheckedChange = {
                                 telegramEnabled = it
                                 prefs.telegramEnabled = it
+                                viewModel.refreshTelegramPolling()
                             },
                             modifier = Modifier.testTag("telegram_switch")
                         )
@@ -181,6 +182,9 @@ fun SettingsScreen(
                             onValueChange = {
                                 botToken = it
                                 prefs.telegramBotToken = it
+                                if (it.contains(":")) {
+                                    viewModel.refreshTelegramPolling()
+                                }
                             },
                             label = { Text("BOT TOKEN (@BotFather)") },
                             placeholder = { Text("Наприклад: 123456789:ABCdef-...") },
@@ -262,8 +266,7 @@ fun SettingsScreen(
                                 onCheckedChange = {
                                     botCommandsEnabled = it
                                     prefs.telegramBotCommandsEnabled = it
-                                    // Restart service to apply polling state
-                                    viewModel.toggleBackgroundService(prefs.backgroundServiceEnabled)
+                                    viewModel.refreshTelegramPolling()
                                 }
                             )
                         }
@@ -272,6 +275,7 @@ fun SettingsScreen(
 
                         Button(
                             onClick = {
+                                viewModel.refreshTelegramPolling()
                                 viewModel.testTelegramConnection(botToken, chatId)
                             },
                             modifier = Modifier

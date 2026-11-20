@@ -28,11 +28,14 @@ data class MonthKey(
 }
 
 data class MonthStats(
-    val onlineHours: Float,
-    val outageHours: Float,
+    val onlineMinutes: Long,
+    val outageMinutes: Long,
     val outageCount: Int,
     val totalEvents: Int
-)
+) {
+    val onlineHours: Float get() = onlineMinutes / 60f
+    val outageHours: Float get() = outageMinutes / 60f
+}
 
 data class DailyOutageStat(
     val dateLabel: String,
@@ -78,13 +81,16 @@ object PowerStatsHelper {
     }
 
     /**
-     * Calculates statistics for a selected month without resetting daily.
+     * Calculates statistics for a selected month from actual recorded events and ongoing monitoring state.
+     * Avoids inflating online time with calendar days before the app was installed or cleared.
      */
     fun calculateMonthStats(
         events: List<PowerEvent>,
         monthKey: MonthKey,
         nowMs: Long = System.currentTimeMillis(),
         ongoingOutageStartMs: Long? = null,
+        ongoingPowerState: Boolean? = if (ongoingOutageStartMs != null) false else null,
+        ongoingStateStartMs: Long? = ongoingOutageStartMs,
         timeZone: TimeZone = TimeZone.getDefault()
     ): MonthStats {
         val monthStartCal = Calendar.getInstance(timeZone).apply {
@@ -106,45 +112,69 @@ object PowerStatsHelper {
         val effectiveEndMs = min(nowMs, monthEndMs)
         val elapsedMonthMinutes = max(0L, (effectiveEndMs - monthStartMs) / 60_000L)
 
+        var onlineMinutes = 0L
         var outageMinutes = 0L
         var outageCount = 0
 
         val monthEvents = filterEventsForMonth(events, monthKey, timeZone)
         for (event in events) {
-            if (event.eventType == "POWER_CONNECTED" && event.durationMinutes > 0L) {
-                val intervalEnd = event.timestamp
-                val intervalStart = intervalEnd - event.durationMinutes * 60_000L
-                val overlapStart = max(intervalStart, monthStartMs)
-                val overlapEnd = min(intervalEnd, monthEndMs)
-                if (overlapEnd > overlapStart) {
-                    outageMinutes += (overlapEnd - overlapStart) / 60_000L
+            if (event.eventType == "POWER_CONNECTED") {
+                if (event.durationMinutes > 0L) {
+                    val intervalEnd = event.timestamp
+                    val intervalStart = intervalEnd - event.durationMinutes * 60_000L
+                    val overlapStart = max(intervalStart, monthStartMs)
+                    val overlapEnd = min(intervalEnd, monthEndMs)
+                    if (overlapEnd > overlapStart) {
+                        outageMinutes += (overlapEnd - overlapStart) / 60_000L
+                        outageCount++
+                    }
+                } else if (event.timestamp in monthStartMs until monthEndMs) {
                     outageCount++
                 }
             } else if (event.eventType == "POWER_DISCONNECTED") {
+                if (event.durationMinutes > 0L) {
+                    val intervalEnd = event.timestamp
+                    val intervalStart = intervalEnd - event.durationMinutes * 60_000L
+                    val overlapStart = max(intervalStart, monthStartMs)
+                    val overlapEnd = min(intervalEnd, monthEndMs)
+                    if (overlapEnd > overlapStart) {
+                        onlineMinutes += (overlapEnd - overlapStart) / 60_000L
+                    }
+                }
                 if (event.timestamp in monthStartMs until monthEndMs) {
-                    // Count disconnections even if ongoing or not yet paired
-                    if (events.none { it.eventType == "POWER_CONNECTED" && it.timestamp > event.timestamp && (it.timestamp - it.durationMinutes * 60_000L) <= event.timestamp + 60_000L }) {
+                    val hasClosingConnect = events.any {
+                        it.eventType == "POWER_CONNECTED" &&
+                            it.timestamp >= event.timestamp &&
+                            (it.timestamp - it.durationMinutes * 60_000L) <= event.timestamp + 60_000L
+                    }
+                    if (!hasClosingConnect) {
                         outageCount++
                     }
                 }
             }
         }
 
-        if (ongoingOutageStartMs != null && nowMs > ongoingOutageStartMs) {
-            val overlapStart = max(ongoingOutageStartMs, monthStartMs)
+        if (ongoingPowerState != null && ongoingStateStartMs != null && nowMs > ongoingStateStartMs) {
+            val latestEventMs = events.maxOfOrNull { it.timestamp } ?: 0L
+            val effectiveOngoingStart = max(ongoingStateStartMs, latestEventMs)
+            val overlapStart = max(effectiveOngoingStart, monthStartMs)
             val overlapEnd = min(nowMs, monthEndMs)
             if (overlapEnd > overlapStart) {
-                outageMinutes += (overlapEnd - overlapStart) / 60_000L
+                val mins = (overlapEnd - overlapStart) / 60_000L
+                if (ongoingPowerState) {
+                    onlineMinutes += mins
+                } else {
+                    outageMinutes += mins
+                }
             }
         }
 
-        val outageHours = outageMinutes / 60f
-        val onlineMinutes = max(0L, elapsedMonthMinutes - outageMinutes)
-        val onlineHours = onlineMinutes / 60f
+        val clampedOnline = min(onlineMinutes, elapsedMonthMinutes)
+        val clampedOutage = min(outageMinutes, elapsedMonthMinutes)
 
         return MonthStats(
-            onlineHours = onlineHours,
-            outageHours = outageHours,
+            onlineMinutes = clampedOnline,
+            outageMinutes = clampedOutage,
             outageCount = outageCount,
             totalEvents = monthEvents.size
         )
@@ -279,5 +309,19 @@ object PowerStatsHelper {
             return "$hours $word"
         }
         return "$hours год $mins хв"
+    }
+
+    /**
+     * Formats minutes for HistoryScreen stats card (e.g. "0 хв", "9 хв", "2 год", "1 год 15 хв").
+     */
+    fun formatDurationHoursMinutesUk(totalMinutes: Long): String {
+        if (totalMinutes <= 0L) return "0 хв"
+        val hours = totalMinutes / 60L
+        val mins = totalMinutes % 60L
+        return when {
+            hours == 0L -> "$mins хв"
+            mins == 0L -> "$hours год"
+            else -> "$hours год $mins хв"
+        }
     }
 }

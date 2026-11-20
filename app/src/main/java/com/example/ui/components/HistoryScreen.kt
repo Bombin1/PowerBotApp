@@ -196,7 +196,7 @@ fun HistoryScreen(
                                 Text("Зі світлом", fontSize = 11.sp, color = LightGreenOnline)
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
-                                    String.format(Locale.US, "%.1f год", monthStats.onlineHours),
+                                    PowerStatsHelper.formatDurationHoursMinutesUk(monthStats.onlineMinutes),
                                     fontSize = 20.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = LightGreenOnline
@@ -213,7 +213,7 @@ fun HistoryScreen(
                                 Text("Без світла", fontSize = 11.sp, color = LightRedOutage)
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
-                                    String.format(Locale.US, "%.1f год", monthStats.outageHours),
+                                    PowerStatsHelper.formatDurationHoursMinutesUk(monthStats.outageMinutes),
                                     fontSize = 20.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = LightRedOutage

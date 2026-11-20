@@ -22,6 +22,7 @@ import com.example.util.PowerStatsHelper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -34,12 +35,15 @@ import java.util.Locale
 
 class PowerMonitorService : Service() {
 
-    private val serviceScope = CoroutineScope(Dispatchers.IO + Job())
+    private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private lateinit var preferences: AppPreferences
     private lateinit var database: AppDatabase
     private var wakeLock: PowerManager.WakeLock? = null
     private var scheduleCheckJob: Job? = null
+    private var telegramSupervisorJob: Job? = null
     private var telegramPollingJob: Job? = null
+    private var activePollingToken: String = ""
+    private var adminNotifiedToken: String = ""
 
     private val batteryReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -185,20 +189,61 @@ class PowerMonitorService : Service() {
     }
 
     private fun startTelegramPolling() {
-        telegramPollingJob?.cancel()
-        if (!preferences.telegramEnabled || !preferences.telegramBotCommandsEnabled || preferences.telegramBotToken.isBlank()) {
-            return
-        }
+        if (telegramSupervisorJob?.isActive == true) return
+        telegramSupervisorJob = serviceScope.launch {
+            while (isActive) {
+                val token = preferences.telegramBotToken.trim()
+                val shouldRun = preferences.telegramEnabled &&
+                    preferences.telegramBotCommandsEnabled &&
+                    token.isNotBlank()
 
-        telegramPollingJob = serviceScope.launch {
-            val token = preferences.telegramBotToken
+                if (!shouldRun) {
+                    if (telegramPollingJob?.isActive == true) {
+                        telegramPollingJob?.cancel()
+                        telegramPollingJob = null
+                        activePollingToken = ""
+                    }
+                    delay(2000)
+                    continue
+                }
+
+                if (telegramPollingJob?.isActive != true || activePollingToken != token) {
+                    telegramPollingJob?.cancel()
+                    activePollingToken = token
+                    telegramPollingJob = launchTelegramPollingLoop(token)
+                }
+
+                delay(2000)
+            }
+        }
+    }
+
+    private fun launchTelegramPollingLoop(token: String): Job {
+        return serviceScope.launch {
+            val tokenHash = token.hashCode()
+            if (preferences.lastTelegramTokenHash != tokenHash) {
+                preferences.lastTelegramUpdateId = 0L
+                preferences.lastTelegramTokenHash = tokenHash
+            }
+
+            // Clear any active webhook so getUpdates never hits HTTP 409 Conflict
+            try {
+                TelegramClient.deleteWebhook(token)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+
             val adminIdLong = preferences.telegramAdminId.trim().toLongOrNull() ?: 0L
             val adminIds = if (adminIdLong != 0L) listOf(adminIdLong) else emptyList()
 
-            // 1. Register commands menu in Telegram (groups, default/channels, admin)
-            TelegramClient.setBotCommands(token, adminIds)
+            // Register commands menu in Telegram (groups, default/channels, admin)
+            try {
+                TelegramClient.setBotCommands(token, adminIds)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
 
-            // 2. First-run activation check in Telegram chat (mimicking Termux first_run_check)
+            // First-run activation check in Telegram chat
             if (!preferences.telegramFirstRunNotified && preferences.telegramChatId.isNotBlank()) {
                 try {
                     val me = TelegramClient.getMe(token)
@@ -217,8 +262,9 @@ class PowerMonitorService : Service() {
                 }
             }
 
-            // 3. Admin startup notification
-            if (adminIdLong != 0L) {
+            // Admin startup notification (at most once per service run for this token)
+            if (adminIdLong != 0L && adminNotifiedToken != token) {
+                adminNotifiedToken = token
                 try {
                     TelegramClient.sendMessage(
                         token,
@@ -233,10 +279,9 @@ class PowerMonitorService : Service() {
 
             var offset = preferences.lastTelegramUpdateId
             while (isActive) {
-                val currentToken = preferences.telegramBotToken
-                if (currentToken.isBlank() || !preferences.telegramEnabled || !preferences.telegramBotCommandsEnabled) {
-                    delay(4000)
-                    continue
+                val currentToken = preferences.telegramBotToken.trim()
+                if (currentToken != token || !preferences.telegramEnabled || !preferences.telegramBotCommandsEnabled) {
+                    break
                 }
 
                 try {
@@ -245,7 +290,13 @@ class PowerMonitorService : Service() {
                         offset = update.updateId + 1
                         preferences.lastTelegramUpdateId = offset
 
-                        handleIncomingTelegramMessage(currentToken, update)
+                        serviceScope.launch {
+                            try {
+                                handleIncomingTelegramMessage(currentToken, update)
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                            }
+                        }
                     }
                 } catch (e: Exception) {
                     delay(3000)
@@ -452,6 +503,21 @@ class PowerMonitorService : Service() {
                     TelegramClient.editMessageText(botToken, update.chatId, update.messageId, "🛠️ *Адмін-панель:*", buildMainAdminMarkup())
                     TelegramClient.answerCallbackQuery(botToken, cbId)
                 }
+
+                callData == "cmd_status" -> {
+                    TelegramClient.answerCallbackQuery(botToken, cbId)
+                    sendStatusReply(botToken, chatIdStr, forceInline = update.chatType == "channel")
+                }
+
+                callData == "cmd_stats" -> {
+                    TelegramClient.answerCallbackQuery(botToken, cbId)
+                    sendStatsReply(botToken, chatIdStr, forceInline = update.chatType == "channel")
+                }
+
+                callData == "cmd_info" -> {
+                    TelegramClient.answerCallbackQuery(botToken, cbId)
+                    sendInfoReply(botToken, chatIdStr, forceInline = update.chatType == "channel")
+                }
             }
             return
         }
@@ -459,48 +525,22 @@ class PowerMonitorService : Service() {
         // --- B. Handle Text Messages & Channel Posts ---
         val text = update.text.trim()
         if (text.isBlank()) return
+        val normalizedText = text.replace("\uFE0F", "").trim()
+        val isChannel = update.chatType == "channel"
 
         when {
-            text == "💡 Перевірити наявність" || isCommand(text, "status") -> {
-                TelegramClient.deleteMessage(botToken, update.chatId, update.messageId)
-
-                val info = BatteryHelper.getBatteryInfo(this@PowerMonitorService)
-                val statusText = if (info.isPlugged) "💡 *Світло є*" else "🕯️ *Світла немає*"
-                val tempStr = String.format(Locale.US, "%.1f", info.temperatureCelsius)
-                val response = "$statusText\n🔋: *${info.percent}%* | 🌡️: ~*${tempStr}°C*"
-
-                TelegramClient.sendMessage(
-                    botToken = botToken,
-                    chatId = chatIdStr,
-                    text = response,
-                    withKeyboard = true
-                )
+            normalizedText.contains("Перевірити наявність", ignoreCase = true) || isCommand(normalizedText, "status") -> {
+                serviceScope.launch { TelegramClient.deleteMessage(botToken, update.chatId, update.messageId) }
+                sendStatusReply(botToken, chatIdStr, forceInline = isChannel)
             }
 
-            text == "📊 Статистика" || text.equals("Статистика", ignoreCase = true) || isCommand(text, "stats") -> {
-                TelegramClient.deleteMessage(botToken, update.chatId, update.messageId)
-
-                val nowMs = System.currentTimeMillis()
-                val eightDaysAgoMs = nowMs - 8L * 24 * 60 * 60 * 1000L
-                val recentEvents = database.powerEventDao().getEventsSince(eightDaysAgoMs)
-                val ongoingOutageStart = if (preferences.lastPowerState == false) preferences.lastStateChangeTime else null
-
-                val statsText = PowerStatsHelper.formatWeeklyStatsForTelegram(
-                    events = recentEvents,
-                    nowMs = nowMs,
-                    ongoingOutageStartMs = ongoingOutageStart
-                )
-
-                TelegramClient.sendMessage(
-                    botToken = botToken,
-                    chatId = chatIdStr,
-                    text = statsText,
-                    withKeyboard = true
-                )
+            normalizedText.contains("Статистика", ignoreCase = true) || isCommand(normalizedText, "stats") -> {
+                serviceScope.launch { TelegramClient.deleteMessage(botToken, update.chatId, update.messageId) }
+                sendStatsReply(botToken, chatIdStr, forceInline = isChannel)
             }
 
-            isCommand(text, "graph") || isCommand(text, "schedule") -> {
-                TelegramClient.deleteMessage(botToken, update.chatId, update.messageId)
+            normalizedText.contains("Графік", ignoreCase = true) || isCommand(normalizedText, "graph") || isCommand(normalizedText, "schedule") -> {
+                serviceScope.launch { TelegramClient.deleteMessage(botToken, update.chatId, update.messageId) }
 
                 val city = preferences.selectedCity
                 val queue = preferences.selectedQueue
@@ -527,25 +567,14 @@ class PowerMonitorService : Service() {
                     botToken = botToken,
                     chatId = chatIdStr,
                     text = scheduleText,
-                    withKeyboard = true
+                    withKeyboard = true,
+                    forceInlineForChannel = isChannel
                 )
             }
 
-            text == "ℹ️ Інфо" || isCommand(text, "info") -> {
-                TelegramClient.deleteMessage(botToken, update.chatId, update.messageId)
-
-                val infoText = "ℹ️ *Інформація:*\n\n" +
-                        "🤖 *PowerBot (v${BuildConfig.VERSION_NAME})*\n" +
-                        "🤝 Особлива подяка автору [yaroslav2901](https://github.com/yaroslav2901/OE_OUTAGE_DATA.git) " +
-                        "за парсер графіків відключень.\n\n" +
-                        "🔗 [GitHub](https://github.com/Bombin1/PowerBotApp) | ☕ [На каву](https://send.monobank.ua/jar/8WFAPWLdPu)"
-
-                TelegramClient.sendMessage(
-                    botToken = botToken,
-                    chatId = chatIdStr,
-                    text = infoText,
-                    withKeyboard = true
-                )
+            normalizedText.contains("Інфо", ignoreCase = true) || isCommand(normalizedText, "info") -> {
+                serviceScope.launch { TelegramClient.deleteMessage(botToken, update.chatId, update.messageId) }
+                sendInfoReply(botToken, chatIdStr, forceInline = isChannel)
             }
 
             isCommand(text, "set") -> {
@@ -571,10 +600,65 @@ class PowerMonitorService : Service() {
                     botToken = botToken,
                     chatId = chatIdStr,
                     text = welcome,
-                    withKeyboard = true
+                    withKeyboard = true,
+                    forceInlineForChannel = isChannel
                 )
             }
         }
+    }
+
+    private suspend fun sendStatusReply(botToken: String, chatIdStr: String, forceInline: Boolean) {
+        val info = BatteryHelper.getBatteryInfo(this@PowerMonitorService)
+        val statusText = if (info.isPlugged) "💡 *Світло є*" else "🕯️ *Світла немає*"
+        val tempStr = String.format(Locale.US, "%.1f", info.temperatureCelsius)
+        val response = "$statusText\n🔋: *${info.percent}%* | 🌡️: ~*${tempStr}°C*"
+
+        TelegramClient.sendMessage(
+            botToken = botToken,
+            chatId = chatIdStr,
+            text = response,
+            withKeyboard = true,
+            forceInlineForChannel = forceInline
+        )
+    }
+
+    private suspend fun sendStatsReply(botToken: String, chatIdStr: String, forceInline: Boolean) {
+        val nowMs = System.currentTimeMillis()
+        val eightDaysAgoMs = nowMs - 8L * 24 * 60 * 60 * 1000L
+        val recentEvents = database.powerEventDao().getEventsSince(eightDaysAgoMs)
+        val ongoingOutageStart = if (preferences.lastPowerState == false) {
+            maxOf(preferences.lastStateChangeTime, preferences.journalResetTimeMs)
+        } else null
+
+        val statsText = PowerStatsHelper.formatWeeklyStatsForTelegram(
+            events = recentEvents,
+            nowMs = nowMs,
+            ongoingOutageStartMs = ongoingOutageStart
+        )
+
+        TelegramClient.sendMessage(
+            botToken = botToken,
+            chatId = chatIdStr,
+            text = statsText,
+            withKeyboard = true,
+            forceInlineForChannel = forceInline
+        )
+    }
+
+    private suspend fun sendInfoReply(botToken: String, chatIdStr: String, forceInline: Boolean) {
+        val infoText = "ℹ️ *Інформація:*\n\n" +
+                "🤖 *PowerBot (v${BuildConfig.VERSION_NAME})*\n" +
+                "🤝 Особлива подяка автору [yaroslav2901](https://github.com/yaroslav2901/OE_OUTAGE_DATA.git) " +
+                "за парсер графіків відключень.\n\n" +
+                "🔗 [GitHub](https://github.com/Bombin1/PowerBotApp) | ☕ [На каву](https://send.monobank.ua/jar/8WFAPWLdPu)"
+
+        TelegramClient.sendMessage(
+            botToken = botToken,
+            chatId = chatIdStr,
+            text = infoText,
+            withKeyboard = true,
+            forceInlineForChannel = forceInline
+        )
     }
 
     private fun startPeriodicScheduleChecker() {

@@ -28,7 +28,7 @@ object ScheduleParser {
                 connectTimeout = 12000
                 readTimeout = 12000
                 requestMethod = "GET"
-                setRequestProperty("User-Agent", "PowerBot-Android/3.5.2")
+                setRequestProperty("User-Agent", "PowerBot-Android/${com.example.BuildConfig.VERSION_NAME}")
                 setRequestProperty("Accept", "application/json")
             }
             if (connection.responseCode in 200..299) {
