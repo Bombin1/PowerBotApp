@@ -12,7 +12,7 @@ interface PowerEventDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertEvent(event: PowerEvent): Long
 
-    @Query("SELECT * FROM power_events ORDER BY timestamp DESC LIMIT 100")
+    @Query("SELECT * FROM power_events ORDER BY timestamp DESC")
     fun getAllEventsFlow(): Flow<List<PowerEvent>>
 
     @Query("SELECT * FROM power_events ORDER BY timestamp DESC LIMIT 1")

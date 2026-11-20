@@ -59,11 +59,20 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.runtime.LaunchedEffect
+import com.example.BuildConfig
 import com.example.ui.MainViewModel
 import com.example.ui.theme.ElectricBlue
 import com.example.ui.theme.ElectricYellow
 import com.example.ui.theme.LightGreenOnline
 import com.example.ui.theme.LightRedOutage
+import com.example.util.GitHubUpdater
+import com.example.util.UpdateState
 
 @Composable
 fun SettingsScreen(
@@ -87,6 +96,25 @@ fun SettingsScreen(
 
     val telegramStatus by viewModel.telegramTestStatus.collectAsState()
     val isTestingTelegram by viewModel.isTestingTelegram.collectAsState()
+    val updateState by viewModel.updateState.collectAsState()
+
+    val unknownSourcesLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        viewModel.onInstallPermissionReturned()
+    }
+
+    LaunchedEffect(updateState) {
+        val state = updateState
+        if (state is UpdateState.ReadyToInstall) {
+            try {
+                val installIntent = GitHubUpdater.createInstallIntent(context, state.apkFile)
+                context.startActivity(installIntent)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
 
     LazyColumn(
         modifier = modifier
@@ -224,7 +252,7 @@ fun SettingsScreen(
                                     fontSize = 14.sp
                                 )
                                 Text(
-                                    text = "Обробка кнопки «💡 Перевірити наявність», /status, /graph, /info",
+                                    text = "Обробка кнопок «💡 Перевірити наявність», «📊 Статистика», /status, /stats, /info",
                                     fontSize = 11.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -420,11 +448,231 @@ fun SettingsScreen(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "Версія 3.5 (Повноцінний Android клієнт на заміну скрипта в Termux)",
+                        text = "Версія ${BuildConfig.VERSION_NAME} (Повноцінний Android клієнт на заміну скрипта в Termux)",
                         fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Check for GitHub Updates button
+                    Button(
+                        onClick = { viewModel.checkForUpdates() },
+                        enabled = updateState !is UpdateState.Checking && updateState !is UpdateState.Downloading,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("check_updates_button"),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue)
+                    ) {
+                        if (updateState is UpdateState.Checking) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onPrimary
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Перевірка оновлень...")
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.SystemUpdate,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Перевірити оновлення")
+                        }
+                    }
+
+                    // Update status display
+                    when (val state = updateState) {
+                        is UpdateState.UpToDate -> {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = LightGreenOnline.copy(alpha = 0.15f)
+                                )
+                            ) {
+                                Text(
+                                    text = "✅ У вас остання версія (${state.currentVersion}). Реліз на GitHub: ${state.latestTag}",
+                                    fontSize = 12.sp,
+                                    modifier = Modifier.padding(10.dp),
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+
+                        is UpdateState.UpdateAvailable -> {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("update_available_card"),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = ElectricBlue.copy(alpha = 0.12f)
+                                )
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Text(
+                                        text = "🚀 Доступне оновлення: ${state.release.tagName}",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    if (state.release.changelog.isNotBlank()) {
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Text(
+                                            text = state.release.changelog,
+                                            fontSize = 12.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(10.dp))
+                                    if (!state.release.apkDownloadUrl.isNullOrBlank()) {
+                                        Button(
+                                            onClick = { viewModel.downloadAndInstallUpdate(state.release) },
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .testTag("download_update_button"),
+                                            shape = RoundedCornerShape(10.dp),
+                                            colors = ButtonDefaults.buttonColors(containerColor = LightGreenOnline)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Download,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("Завантажити та встановити (${state.release.versionName})")
+                                        }
+                                    } else {
+                                        OutlinedButton(
+                                            onClick = {
+                                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(state.release.htmlUrl))
+                                                context.startActivity(intent)
+                                            },
+                                            modifier = Modifier.fillMaxWidth(),
+                                            shape = RoundedCornerShape(10.dp)
+                                        ) {
+                                            Text("Відкрити реліз ${state.release.tagName} на GitHub")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        is UpdateState.Downloading -> {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = ElectricBlue.copy(alpha = 0.10f)
+                                )
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Text(
+                                        text = "⬇️ Завантаження оновлення ${state.release.tagName}: ${state.progressPercent}%",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    LinearProgressIndicator(
+                                        progress = { state.progressPercent / 100f },
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+                            }
+                        }
+
+                        is UpdateState.NeedsInstallPermission -> {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = ElectricYellow.copy(alpha = 0.15f)
+                                )
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Text(
+                                        text = "⚠️ Потрібен дозвіл на встановлення оновлень (APK) з цього додатку.",
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Button(
+                                        onClick = {
+                                            val settingsIntent = GitHubUpdater.createUnknownSourcesSettingsIntent(context)
+                                            if (settingsIntent != null) {
+                                                unknownSourcesLauncher.launch(settingsIntent)
+                                            }
+                                        },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        shape = RoundedCornerShape(10.dp)
+                                    ) {
+                                        Text("Надати дозвіл на встановлення")
+                                    }
+                                }
+                            }
+                        }
+
+                        is UpdateState.ReadyToInstall -> {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = LightGreenOnline.copy(alpha = 0.15f)
+                                )
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Text(
+                                        text = "✅ Оновлення ${state.release.tagName} завантажено!",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Button(
+                                        onClick = {
+                                            val installIntent = GitHubUpdater.createInstallIntent(context, state.apkFile)
+                                            context.startActivity(installIntent)
+                                        },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        shape = RoundedCornerShape(10.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = LightGreenOnline)
+                                    ) {
+                                        Text("Встановити зараз")
+                                    }
+                                }
+                            }
+                        }
+
+                        is UpdateState.Error -> {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = LightRedOutage.copy(alpha = 0.15f)
+                                )
+                            ) {
+                                Text(
+                                    text = "❌ ${state.message}",
+                                    fontSize = 12.sp,
+                                    modifier = Modifier.padding(10.dp),
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+
+                        UpdateState.Idle, UpdateState.Checking -> Unit
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
                     Text(
                         text = "🤝 Особлива подяка автору @yaroslav2901 за надійні парсери графіків відключень OE_OUTAGE_DATA та Baskerville42 (outage-data-ua).",
                         fontSize = 12.sp,
@@ -440,13 +688,13 @@ fun SettingsScreen(
                     ) {
                         OutlinedButton(
                             onClick = {
-                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/Bombin1/PowerBot.git"))
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(GitHubUpdater.RELEASES_PAGE_URL))
                                 context.startActivity(intent)
                             },
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(10.dp)
                         ) {
-                            Text("GitHub", fontSize = 12.sp)
+                            Text("GitHub Релізи", fontSize = 12.sp)
                         }
 
                         OutlinedButton(

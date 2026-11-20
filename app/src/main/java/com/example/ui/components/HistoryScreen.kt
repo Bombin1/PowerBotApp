@@ -1,6 +1,6 @@
 package com.example.ui.components
 
-import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,26 +14,31 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.PowerOff
-import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -41,18 +46,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.PowerEvent
 import com.example.ui.MainViewModel
-import com.example.ui.theme.ElectricBlue
-import com.example.ui.theme.ElectricYellow
 import com.example.ui.theme.LightGreenOnline
 import com.example.ui.theme.LightRedOutage
+import com.example.util.PowerStatsHelper
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -63,14 +66,30 @@ fun HistoryScreen(
     modifier: Modifier = Modifier
 ) {
     val events by viewModel.historyEvents.collectAsState()
-    val (onlineHours, outageHours) = viewModel.calculateTodayStats(events)
+    val availableMonths = remember(events) { PowerStatsHelper.getAvailableMonths(events) }
+    var selectedMonth by remember { mutableStateOf(availableMonths.first()) }
+
+    // Ensure selectedMonth stays valid if events change
+    LaunchedEffect(availableMonths) {
+        if (!availableMonths.contains(selectedMonth)) {
+            selectedMonth = availableMonths.first()
+        }
+    }
+
+    val monthEvents = remember(events, selectedMonth) {
+        PowerStatsHelper.filterEventsForMonth(events, selectedMonth)
+    }
+    val monthStats = remember(events, selectedMonth) {
+        viewModel.calculateMonthStats(events, selectedMonth)
+    }
+
     var showClearDialog by remember { mutableStateOf(false) }
 
     if (showClearDialog) {
         AlertDialog(
             onDismissRequest = { showClearDialog = false },
             title = { Text("Очистити журнал?") },
-            text = { Text("Всі збережені записи про відключення та увімкнення світла будуть видалені.") },
+            text = { Text("Усі збережені записи про відключення та увімкнення світла за весь час будуть остаточно видалені.") },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -78,7 +97,7 @@ fun HistoryScreen(
                         showClearDialog = false
                     }
                 ) {
-                    Text("Видалити", color = LightRedOutage)
+                    Text("Стерти", color = LightRedOutage, fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
@@ -96,7 +115,42 @@ fun HistoryScreen(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // 1. STATS BANNER
+        // 1. MONTH SELECTOR (preserves previous months seamlessly)
+        item {
+            LazyRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("history_month_selector"),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(availableMonths) { monthKey ->
+                    val isSelected = monthKey == selectedMonth
+                    FilterChip(
+                        selected = isSelected,
+                        onClick = { selectedMonth = monthKey },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Default.CalendarMonth,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        },
+                        label = {
+                            Text(
+                                text = monthKey.formatTitle(),
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                            )
+                        },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                            selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    )
+                }
+            }
+        }
+
+        // 2. MONTHLY STATS BANNER
         item {
             ElevatedCard(
                 modifier = Modifier
@@ -113,23 +167,17 @@ fun HistoryScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = "Статистика за сьогодні",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-
-                        if (events.isNotEmpty()) {
-                            IconButton(
-                                onClick = { showClearDialog = true },
-                                modifier = Modifier.size(36.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.DeleteSweep,
-                                    contentDescription = "Очистити журнал",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
+                        Column {
+                            Text(
+                                text = "Статистика за місяць",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "${selectedMonth.formatTitle()} • Відключень: ${monthStats.outageCount}",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
 
@@ -148,7 +196,7 @@ fun HistoryScreen(
                                 Text("Зі світлом", fontSize = 11.sp, color = LightGreenOnline)
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
-                                    String.format(Locale.US, "%.1f год", onlineHours),
+                                    String.format(Locale.US, "%.1f год", monthStats.onlineHours),
                                     fontSize = 20.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = LightGreenOnline
@@ -165,7 +213,7 @@ fun HistoryScreen(
                                 Text("Без світла", fontSize = 11.sp, color = LightRedOutage)
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
-                                    String.format(Locale.US, "%.1f год", outageHours),
+                                    String.format(Locale.US, "%.1f год", monthStats.outageHours),
                                     fontSize = 20.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = LightRedOutage
@@ -173,11 +221,39 @@ fun HistoryScreen(
                             }
                         }
                     }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    // Explicit "Стерти журнал" button controlled solely by the user
+                    OutlinedButton(
+                        onClick = { showClearDialog = true },
+                        enabled = events.isNotEmpty(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("clear_history_button"),
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(
+                            1.dp,
+                            if (events.isNotEmpty()) LightRedOutage.copy(alpha = 0.5f)
+                            else MaterialTheme.colorScheme.outlineVariant
+                        ),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = LightRedOutage
+                        )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.DeleteSweep,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Стерти журнал", fontWeight = FontWeight.SemiBold)
+                    }
                 }
             }
         }
 
-        // 2. EVENTS LIST TITLE
+        // 3. EVENTS LIST TITLE
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -191,19 +267,21 @@ fun HistoryScreen(
                     color = MaterialTheme.colorScheme.onBackground
                 )
                 Text(
-                    text = "Записів: ${events.size}",
+                    text = "Записів: ${monthEvents.size} (всього: ${events.size})",
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
 
-        if (events.isEmpty()) {
+        if (monthEvents.isEmpty()) {
             item {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                    )
                 ) {
                     Column(
                         modifier = Modifier
@@ -219,23 +297,23 @@ fun HistoryScreen(
                         )
                         Spacer(modifier = Modifier.height(12.dp))
                         Text(
-                            text = "Поки що подій не зафіксовано",
+                            text = "Записів за ${selectedMonth.formatTitle()} немає",
                             fontWeight = FontWeight.SemiBold,
                             fontSize = 15.sp,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "Коли телефон буде від'єднано від живлення або під'єднано знову, подія автоматично з'явиться тут.",
+                            text = "Усі події зберігаються автоматично протягом місяця і не видаляються при зміні дня чи нового місяця.",
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            textAlign = TextAlign.Center
                         )
                     }
                 }
             }
         } else {
-            items(events) { event ->
+            items(monthEvents, key = { it.id }) { event ->
                 EventItemCard(event = event)
             }
         }
@@ -249,7 +327,7 @@ fun EventItemCard(event: PowerEvent) {
     val title = if (isRestored) "💡 Світло з'явилось" else "🕯️ Світло зникло"
 
     val timeFormatted = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(event.timestamp))
-    val dateFormatted = SimpleDateFormat("dd MMMM", Locale("uk")).format(Date(event.timestamp))
+    val dateFormatted = SimpleDateFormat("dd.MM.yyyy", Locale.getDefault()).format(Date(event.timestamp))
 
     Card(
         modifier = Modifier
@@ -265,7 +343,7 @@ fun EventItemCard(event: PowerEvent) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                 Surface(
                     shape = CircleShape,
                     color = color.copy(alpha = 0.15f),

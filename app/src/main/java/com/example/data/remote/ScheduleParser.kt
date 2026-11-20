@@ -28,7 +28,7 @@ object ScheduleParser {
                 connectTimeout = 12000
                 readTimeout = 12000
                 requestMethod = "GET"
-                setRequestProperty("User-Agent", "PowerBot-Android/3.5")
+                setRequestProperty("User-Agent", "PowerBot-Android/3.5.2")
                 setRequestProperty("Accept", "application/json")
             }
             if (connection.responseCode in 200..299) {
@@ -681,7 +681,6 @@ object ScheduleParser {
         val sb = StringBuilder()
         val cleanQueue = schedule.queueName.replace("GPV", "").replace("черга", "").trim()
         sb.append("📅 Графік: ${schedule.cityName} (Черга $cleanQueue)\n")
-        sb.append("Дата: ${schedule.dateLabel}\n")
         if (schedule.factUpdate.isNotBlank()) {
             sb.append("Графік оновлено: ${schedule.factUpdate}\n")
         }

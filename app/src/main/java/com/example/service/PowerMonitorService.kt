@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.IBinder
 import android.os.PowerManager
+import com.example.BuildConfig
 import com.example.data.local.AppDatabase
 import com.example.data.local.AppPreferences
 import com.example.data.model.PowerEvent
@@ -15,7 +16,9 @@ import com.example.data.remote.ScheduleParser
 import com.example.data.remote.TelegramClient
 import com.example.data.remote.TgUpdate
 import com.example.util.BatteryHelper
+import com.example.util.GitHubUpdater
 import com.example.util.NotificationHelper
+import com.example.util.PowerStatsHelper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -220,7 +223,7 @@ class PowerMonitorService : Service() {
                     TelegramClient.sendMessage(
                         token,
                         adminIdLong.toString(),
-                        "✅ *Бот запущений!* (v3.5)",
+                        "✅ *Бот запущений!* (v${BuildConfig.VERSION_NAME})",
                         withKeyboard = true
                     )
                 } catch (e: Exception) {
@@ -399,17 +402,30 @@ class PowerMonitorService : Service() {
                 }
 
                 callData == "manual_check_now" -> {
-                    TelegramClient.answerCallbackQuery(botToken, cbId, "🔍 Перевіряю...")
+                    TelegramClient.answerCallbackQuery(botToken, cbId, "🔍 Перевіряю GitHub...")
                     val markup = org.json.JSONArray().apply {
                         put(org.json.JSONArray().apply {
                             put(org.json.JSONObject().apply { put("text", "⬅️ Назад"); put("callback_data", "back_to_main_set") })
                         })
                     }
-                    TelegramClient.editMessageText(botToken, update.chatId, update.messageId, "✅ *Версія актуальна:* `3.5`\nВсі модулі працюють стабільно.", markup)
+                    val currentVer = BuildConfig.VERSION_NAME
+                    val releaseRes = GitHubUpdater.fetchLatestRelease()
+                    val statusMsg = if (releaseRes.isSuccess) {
+                        val rel = releaseRes.getOrThrow()
+                        if (GitHubUpdater.isNewerVersion(rel.versionName, currentVer)) {
+                            "🚀 *Доступне оновлення:* `${rel.tagName}` (поточна: `$currentVer`)\n" +
+                                    "Оновіть додаток у меню *Налаштування -> Перевірити оновлення* або на [GitHub Releases](${rel.htmlUrl})."
+                        } else {
+                            "✅ *Версія актуальна:* `$currentVer`\nОстанній реліз на GitHub: `${rel.tagName}`."
+                        }
+                    } else {
+                        "✅ *Поточна версія:* `$currentVer`\nНе вдалося перевірити GitHub."
+                    }
+                    TelegramClient.editMessageText(botToken, update.chatId, update.messageId, statusMsg, markup)
                 }
 
                 callData == "upd_bot" || callData == "upd_launcher" -> {
-                    TelegramClient.answerCallbackQuery(botToken, cbId, "✅ Встановлена актуальна версія 3.5", showAlert = true)
+                    TelegramClient.answerCallbackQuery(botToken, cbId, "Перевірте оновлення в Налаштуваннях додатку (v${BuildConfig.VERSION_NAME})", showAlert = true)
                 }
 
                 callData == "exec_rollback" -> {
@@ -418,7 +434,7 @@ class PowerMonitorService : Service() {
                             put(org.json.JSONObject().apply { put("text", "⬅️ Назад"); put("callback_data", "back_to_main_set") })
                         })
                     }
-                    TelegramClient.editMessageText(botToken, update.chatId, update.messageId, "↩️ *Відкат:*\nПоточна стабільна версія: `3.5`.", markup)
+                    TelegramClient.editMessageText(botToken, update.chatId, update.messageId, "↩️ *Відкат:*\nПоточна стабільна версія: `${BuildConfig.VERSION_NAME}`.", markup)
                     TelegramClient.answerCallbackQuery(botToken, cbId)
                 }
 
@@ -429,7 +445,7 @@ class PowerMonitorService : Service() {
                             put(org.json.JSONObject().apply { put("text", "⬅️ Назад"); put("callback_data", "back_to_main_set") })
                         })
                     }
-                    TelegramClient.editMessageText(botToken, update.chatId, update.messageId, "♻️ *PowerBot активний і працює на пристрої (v3.5)*", markup)
+                    TelegramClient.editMessageText(botToken, update.chatId, update.messageId, "♻️ *PowerBot активний і працює на пристрої (v${BuildConfig.VERSION_NAME})*", markup)
                 }
 
                 callData == "back_to_main_set" -> {
@@ -461,7 +477,29 @@ class PowerMonitorService : Service() {
                 )
             }
 
-            text == "📊 Графік" || isCommand(text, "graph") || isCommand(text, "schedule") -> {
+            text == "📊 Статистика" || text.equals("Статистика", ignoreCase = true) || isCommand(text, "stats") -> {
+                TelegramClient.deleteMessage(botToken, update.chatId, update.messageId)
+
+                val nowMs = System.currentTimeMillis()
+                val eightDaysAgoMs = nowMs - 8L * 24 * 60 * 60 * 1000L
+                val recentEvents = database.powerEventDao().getEventsSince(eightDaysAgoMs)
+                val ongoingOutageStart = if (preferences.lastPowerState == false) preferences.lastStateChangeTime else null
+
+                val statsText = PowerStatsHelper.formatWeeklyStatsForTelegram(
+                    events = recentEvents,
+                    nowMs = nowMs,
+                    ongoingOutageStartMs = ongoingOutageStart
+                )
+
+                TelegramClient.sendMessage(
+                    botToken = botToken,
+                    chatId = chatIdStr,
+                    text = statsText,
+                    withKeyboard = true
+                )
+            }
+
+            isCommand(text, "graph") || isCommand(text, "schedule") -> {
                 TelegramClient.deleteMessage(botToken, update.chatId, update.messageId)
 
                 val city = preferences.selectedCity
@@ -497,10 +535,10 @@ class PowerMonitorService : Service() {
                 TelegramClient.deleteMessage(botToken, update.chatId, update.messageId)
 
                 val infoText = "ℹ️ *Інформація:*\n\n" +
-                        "🤖 *PowerBot (v3.5)*\n" +
+                        "🤖 *PowerBot (v${BuildConfig.VERSION_NAME})*\n" +
                         "🤝 Особлива подяка автору [yaroslav2901](https://github.com/yaroslav2901/OE_OUTAGE_DATA.git) " +
                         "за парсер графіків відключень.\n\n" +
-                        "🔗 [GitHub](https://github.com/Bombin1/PowerBot.git) | ☕ [На каву](https://send.monobank.ua/jar/8WFAPWLdPu)"
+                        "🔗 [GitHub](https://github.com/Bombin1/PowerBotApp) | ☕ [На каву](https://send.monobank.ua/jar/8WFAPWLdPu)"
 
                 TelegramClient.sendMessage(
                     botToken = botToken,

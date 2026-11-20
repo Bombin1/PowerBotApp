@@ -80,7 +80,7 @@ object TelegramClient {
                         put(JSONObject().apply { put("text", "💡 Перевірити наявність") })
                     })
                     put(JSONArray().apply {
-                        put(JSONObject().apply { put("text", "📊 Графік") })
+                        put(JSONObject().apply { put("text", "📊 Статистика") })
                         put(JSONObject().apply { put("text", "ℹ️ Інфо") })
                     })
                 }
@@ -200,6 +200,10 @@ object TelegramClient {
                 put("description", "💡 Перевірити наявність")
             })
             put(JSONObject().apply {
+                put("command", "stats")
+                put("description", "📊 Статистика")
+            })
+            put(JSONObject().apply {
                 put("command", "info")
                 put("description", "ℹ️ Інфо")
             })
@@ -228,6 +232,10 @@ object TelegramClient {
             put(JSONObject().apply {
                 put("command", "status")
                 put("description", "💡 Перевірити наявність")
+            })
+            put(JSONObject().apply {
+                put("command", "stats")
+                put("description", "📊 Статистика")
             })
             put(JSONObject().apply {
                 put("command", "set")

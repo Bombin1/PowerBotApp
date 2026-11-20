@@ -3,6 +3,7 @@ package com.example.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.BuildConfig
 import com.example.data.local.AppDatabase
 import com.example.data.local.AppPreferences
 import com.example.data.model.BatteryInfo
@@ -15,6 +16,12 @@ import com.example.data.remote.ScheduleParser
 import com.example.data.remote.TelegramClient
 import com.example.service.PowerMonitorService
 import com.example.util.BatteryHelper
+import com.example.util.GitHubRelease
+import com.example.util.GitHubUpdater
+import com.example.util.MonthKey
+import com.example.util.MonthStats
+import com.example.util.PowerStatsHelper
+import com.example.util.UpdateState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -68,6 +75,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _isTestingTelegram = MutableStateFlow(false)
     val isTestingTelegram: StateFlow<Boolean> = _isTestingTelegram.asStateFlow()
+
+    // GitHub App Update State
+    private val _updateState = MutableStateFlow<UpdateState>(UpdateState.Idle)
+    val updateState: StateFlow<UpdateState> = _updateState.asStateFlow()
 
     init {
         // Start live ticker to update battery info and duration
@@ -225,25 +236,83 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun calculateTodayStats(events: List<PowerEvent>): Pair<Float, Float> {
-        // returns Pair(hoursWithPower, hoursWithoutPower)
-        val cal = Calendar.getInstance().apply {
-            set(Calendar.HOUR_OF_DAY, 0)
-            set(Calendar.MINUTE, 0)
-            set(Calendar.SECOND, 0)
-            set(Calendar.MILLISECOND, 0)
-        }
-        val startOfDay = cal.timeInMillis
+    fun calculateMonthStats(events: List<PowerEvent>, monthKey: MonthKey): MonthStats {
+        val ongoingStart = if (preferences.lastPowerState == false) preferences.lastStateChangeTime else null
+        return PowerStatsHelper.calculateMonthStats(
+            events = events,
+            monthKey = monthKey,
+            nowMs = System.currentTimeMillis(),
+            ongoingOutageStartMs = ongoingStart
+        )
+    }
 
-        var outageMinutes = 0L
-        for (event in events) {
-            if (event.timestamp >= startOfDay && event.eventType == "POWER_CONNECTED") {
-                outageMinutes += event.durationMinutes
+    fun checkForUpdates() {
+        if (_updateState.value is UpdateState.Checking || _updateState.value is UpdateState.Downloading) {
+            return
+        }
+        viewModelScope.launch {
+            _updateState.value = UpdateState.Checking
+            val currentVersion = BuildConfig.VERSION_NAME
+            val result = GitHubUpdater.fetchLatestRelease()
+            _updateState.value = result.fold(
+                onSuccess = { release ->
+                    if (GitHubUpdater.isNewerVersion(release.versionName, currentVersion)) {
+                        UpdateState.UpdateAvailable(release)
+                    } else {
+                        UpdateState.UpToDate(currentVersion, release.tagName)
+                    }
+                },
+                onFailure = { err ->
+                    UpdateState.Error(err.message ?: "Помилка перевірки оновлень")
+                }
+            )
+        }
+    }
+
+    fun downloadAndInstallUpdate(release: GitHubRelease) {
+        val apkUrl = release.apkDownloadUrl
+        if (apkUrl.isNullOrBlank()) {
+            _updateState.value = UpdateState.Error("У цьому релізі на GitHub немає прикріпленого APK-файлу.")
+            return
+        }
+        viewModelScope.launch {
+            _updateState.value = UpdateState.Downloading(release, 0)
+            val context = getApplication<android.app.Application>()
+            val fileName = release.apkFileName ?: "PowerBot-${release.versionName}.apk"
+            val result = GitHubUpdater.downloadApk(
+                context = context,
+                downloadUrl = apkUrl,
+                fileName = fileName,
+                onProgress = { pct ->
+                    _updateState.value = UpdateState.Downloading(release, pct)
+                }
+            )
+            _updateState.value = result.fold(
+                onSuccess = { file ->
+                    if (GitHubUpdater.canRequestPackageInstalls(context)) {
+                        UpdateState.ReadyToInstall(file, release)
+                    } else {
+                        UpdateState.NeedsInstallPermission(file, release)
+                    }
+                },
+                onFailure = { err ->
+                    UpdateState.Error(err.message ?: "Не вдалося завантажити оновлення")
+                }
+            )
+        }
+    }
+
+    fun onInstallPermissionReturned() {
+        val current = _updateState.value
+        if (current is UpdateState.NeedsInstallPermission) {
+            val context = getApplication<android.app.Application>()
+            if (GitHubUpdater.canRequestPackageInstalls(context)) {
+                _updateState.value = UpdateState.ReadyToInstall(current.apkFile, current.release)
             }
         }
+    }
 
-        val outageHours = (outageMinutes / 60f).coerceAtMost(24f)
-        val onlineHours = (24f - outageHours).coerceAtLeast(0f)
-        return Pair(onlineHours, outageHours)
+    fun resetUpdateState() {
+        _updateState.value = UpdateState.Idle
     }
 }

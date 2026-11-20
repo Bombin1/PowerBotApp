@@ -1,12 +1,20 @@
 package com.example
 
+import com.example.data.model.CitySchedule
+import com.example.data.model.OutageInterval
 import com.example.data.model.OutageStatus
+import com.example.data.model.PowerEvent
 import com.example.data.model.ScheduleParseResult
 import com.example.data.model.ScheduleSnapshot
 import com.example.data.remote.OutageSources
 import com.example.data.remote.ScheduleParser
+import com.example.util.GitHubUpdater
+import com.example.util.MonthKey
+import com.example.util.PowerStatsHelper
 import org.junit.Assert.*
 import org.junit.Test
+import java.util.Calendar
+import java.util.TimeZone
 class ExampleUnitTest {
 
     @Test
@@ -481,5 +489,153 @@ class ExampleUnitTest {
         assertEquals("set_graph", cb!!.optString("data"))
         assertEquals("query_999", cb.optString("id"))
     }
+
+    /**
+     * v3.5.2 Критерій 2: В повідомленні "Графік оновлено" відсутня строка "Дата:"
+     */
+    @Test
+    fun testV352_FormatScheduleText_NoDateLine() {
+        val schedule = CitySchedule(
+            cityName = "Хмельницький",
+            queueName = "GPV3.1",
+            dateLabel = "20.11.2026",
+            hours = emptyList(),
+            intervals = listOf(
+                OutageInterval("00:00", "10:00", OutageStatus.ONLINE, "Світло є", 10),
+                OutageInterval("10:00", "12:00", OutageStatus.OUTAGE, "Світла немає", 2)
+            ),
+            factUpdate = "20.11.2026 08:30"
+        )
+
+        val formatted = ScheduleParser.formatScheduleText(schedule)
+        assertFalse("Formatted schedule must NOT contain 'Дата:' line", formatted.contains("Дата:"))
+        assertTrue(formatted.contains("📅 Графік: Хмельницький (Черга 3.1)"))
+        assertTrue(formatted.contains("Графік оновлено: 20.11.2026 08:30"))
+        assertTrue(formatted.contains("🔴 **10:00–12:00** — Світла немає (2 год)"))
+    }
+
+    /**
+     * v3.5.2 Критерій 3: Журнал зберігає події за попередні місяці при переході на новий місяць
+     */
+    @Test
+    fun testV352_MonthlyJournalPreservesPreviousMonths() {
+        val tz = TimeZone.getTimeZone("Europe/Kyiv")
+
+        fun makeTime(year: Int, month: Int, day: Int, hour: Int, minute: Int): Long {
+            return Calendar.getInstance(tz).apply {
+                set(year, month, day, hour, minute, 0)
+                set(Calendar.MILLISECOND, 0)
+            }.timeInMillis
+        }
+
+        val octOutageStart = makeTime(2026, Calendar.OCTOBER, 25, 10, 0)
+        val octOutageEnd = makeTime(2026, Calendar.OCTOBER, 25, 12, 0) // 120 min
+        val novOutageStart = makeTime(2026, Calendar.NOVEMBER, 20, 14, 0)
+        val novOutageEnd = makeTime(2026, Calendar.NOVEMBER, 20, 15, 30) // 90 min
+        val nowNov = makeTime(2026, Calendar.NOVEMBER, 20, 18, 0)
+
+        val events = listOf(
+            PowerEvent(id = 1, timestamp = novOutageEnd, eventType = "POWER_CONNECTED", batteryPercent = 80, temperatureCelsius = 25f, durationMinutes = 90),
+            PowerEvent(id = 2, timestamp = novOutageStart, eventType = "POWER_DISCONNECTED", batteryPercent = 90, temperatureCelsius = 25f, durationMinutes = 0),
+            PowerEvent(id = 3, timestamp = octOutageEnd, eventType = "POWER_CONNECTED", batteryPercent = 70, temperatureCelsius = 24f, durationMinutes = 120),
+            PowerEvent(id = 4, timestamp = octOutageStart, eventType = "POWER_DISCONNECTED", batteryPercent = 85, temperatureCelsius = 24f, durationMinutes = 0)
+        )
+
+        val months = PowerStatsHelper.getAvailableMonths(events, nowMs = nowNov, timeZone = tz)
+        assertEquals(2, months.size)
+        assertEquals(MonthKey(2026, Calendar.NOVEMBER), months[0])
+        assertEquals(MonthKey(2026, Calendar.OCTOBER), months[1])
+
+        val octEvents = PowerStatsHelper.filterEventsForMonth(events, MonthKey(2026, Calendar.OCTOBER), timeZone = tz)
+        assertEquals(2, octEvents.size)
+
+        val octStats = PowerStatsHelper.calculateMonthStats(events, MonthKey(2026, Calendar.OCTOBER), nowMs = nowNov, timeZone = tz)
+        assertEquals(2.0f, octStats.outageHours, 0.01f)
+        assertEquals(1, octStats.outageCount)
+
+        val novStats = PowerStatsHelper.calculateMonthStats(events, MonthKey(2026, Calendar.NOVEMBER), nowMs = nowNov, timeZone = tz)
+        assertEquals(1.5f, novStats.outageHours, 0.01f)
+        assertEquals(1, novStats.outageCount)
+    }
+
+    /**
+     * v3.5.2 Критерій 4: Скорочена тижнева статистика для Telegram ("20.11.2026 - 🔌не було 2 години")
+     * Показує тільки ті дні за тиждень, коли були відключення.
+     */
+    @Test
+    fun testV352_WeeklyTelegramStats_OnlyOutageDaysAndFormatting() {
+        val tz = TimeZone.getTimeZone("Europe/Kyiv")
+
+        fun makeTime(year: Int, month: Int, day: Int, hour: Int, minute: Int): Long {
+            return Calendar.getInstance(tz).apply {
+                set(year, month, day, hour, minute, 0)
+                set(Calendar.MILLISECOND, 0)
+            }.timeInMillis
+        }
+
+        val nowMs = makeTime(2026, Calendar.NOVEMBER, 20, 20, 0)
+        val day18End = makeTime(2026, Calendar.NOVEMBER, 18, 13, 0) // 1h outage
+        val day20End = makeTime(2026, Calendar.NOVEMBER, 20, 14, 0) // 2h outage
+        val oldDayEnd = makeTime(2026, Calendar.NOVEMBER, 5, 12, 0) // older than 7 days
+
+        val events = listOf(
+            PowerEvent(id = 1, timestamp = day20End, eventType = "POWER_CONNECTED", batteryPercent = 80, temperatureCelsius = 25f, durationMinutes = 120),
+            PowerEvent(id = 2, timestamp = day18End, eventType = "POWER_CONNECTED", batteryPercent = 85, temperatureCelsius = 24f, durationMinutes = 60),
+            PowerEvent(id = 3, timestamp = oldDayEnd, eventType = "POWER_CONNECTED", batteryPercent = 90, temperatureCelsius = 24f, durationMinutes = 180)
+        )
+
+        val text = PowerStatsHelper.formatWeeklyStatsForTelegram(events, nowMs = nowMs, timeZone = tz)
+        assertTrue(text.contains("18.11.2026 - 🔌не було 1 година"))
+        assertTrue(text.contains("20.11.2026 - 🔌не було 2 години"))
+        assertFalse("Days without outages (e.g. 19.11.2026) must be omitted", text.contains("19.11.2026"))
+        assertFalse("Days older than 7 days must be omitted", text.contains("05.11.2026"))
+
+        // Pluralization checks
+        assertEquals("45 хв", PowerStatsHelper.formatOutageDurationUk(45))
+        assertEquals("1 година", PowerStatsHelper.formatOutageDurationUk(60))
+        assertEquals("2 години", PowerStatsHelper.formatOutageDurationUk(120))
+        assertEquals("5 годин", PowerStatsHelper.formatOutageDurationUk(300))
+        assertEquals("2 год 30 хв", PowerStatsHelper.formatOutageDurationUk(150))
+    }
+
+    /**
+     * v3.5.2 Критерій 5: Перевірка оновлень GitHub (порівняння версій та парсинг релізу)
+     */
+    @Test
+    fun testV352_GitHubUpdater_VersionComparisonAndReleaseParsing() {
+        assertFalse(GitHubUpdater.isNewerVersion("v3.5.1", "3.5.2"))
+        assertFalse(GitHubUpdater.isNewerVersion("v3.5.2", "3.5.2"))
+        assertTrue(GitHubUpdater.isNewerVersion("v3.5.3", "3.5.2"))
+        assertTrue(GitHubUpdater.isNewerVersion("v3.6", "3.5.2"))
+        assertTrue(GitHubUpdater.isNewerVersion("4.0.0", "3.5.2"))
+
+        val releaseJsonWithApk = """
+        {
+          "tag_name": "v3.5.3",
+          "name": "PowerBot v3.5.3",
+          "body": "Виправлено помилки та покращено стабільність.",
+          "html_url": "https://github.com/Bombin1/PowerBotApp/releases/tag/v3.5.3",
+          "assets": [
+            {
+              "name": "PowerBot-v3.5.3.apk",
+              "size": 12345678,
+              "browser_download_url": "https://github.com/Bombin1/PowerBotApp/releases/download/v3.5.3/PowerBot-v3.5.3.apk"
+            }
+          ]
+        }
+        """.trimIndent()
+
+        val release = GitHubUpdater.parseReleaseJson(releaseJsonWithApk)
+        assertEquals("v3.5.3", release.tagName)
+        assertEquals("3.5.3", release.versionName)
+        assertEquals("PowerBot v3.5.3", release.releaseName)
+        assertEquals("PowerBot-v3.5.3.apk", release.apkFileName)
+        assertEquals(12345678L, release.apkSizeBytes)
+        assertEquals(
+            "https://github.com/Bombin1/PowerBotApp/releases/download/v3.5.3/PowerBot-v3.5.3.apk",
+            release.apkDownloadUrl
+        )
+    }
 }
+
 
