@@ -7,18 +7,4 @@
     <color name="teal_700">#FF018786</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
-
-    <!-- Widget Light Mode Colors -->
-    <color name="widget_bg">#FFFFFFFF</color>
-    <color name="widget_stroke">#CBD5E1</color>
-    <color name="widget_card_inner">#F1F5F9</color>
-    <color name="widget_text_primary">#0F172A</color>
-    <color name="widget_text_secondary">#64748B</color>
-    <color name="widget_status_online">#10B981</color>
-    <color name="widget_status_online_bg">#E6F7F0</color>
-    <color name="widget_status_outage">#EF4444</color>
-    <color name="widget_status_outage_bg">#FEE2E2</color>
-    <color name="widget_status_maybe">#F59E0B</color>
-    <color name="widget_status_maybe_bg">#FEF3C7</color>
-    <color name="widget_accent">#0284C7</color>
 </resources>

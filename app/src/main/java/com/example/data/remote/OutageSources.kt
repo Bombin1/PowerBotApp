@@ -7,24 +7,51 @@ data class CitySource(
 )
 
 object OutageSources {
-    val CITIES = listOf(
-        CitySource("Київ", "ДТЕК Київські електромережі", "https://raw.githubusercontent.com/Baskerville42/outage-data-ua/main/data/kyiv.json"),
-        CitySource("Дніпро", "ДТЕК Дніпровські електромережі", "https://raw.githubusercontent.com/Baskerville42/outage-data-ua/main/data/dnipro.json"),
-        CitySource("Одеса", "ДТЕК Одеські електромережі", "https://raw.githubusercontent.com/Baskerville42/outage-data-ua/main/data/odesa.json"),
-        CitySource("Вінниця", "Вінницяобленерго", "https://raw.githubusercontent.com/olnet93/gpv-voe-vinnytsia/main/data/Vinnytsiaoblenerho.json"),
-        CitySource("Черкаси", "Черкасиобленерго", "https://raw.githubusercontent.com/yaroslav2901/OE_OUTAGE_DATA/main/data/Cherkasyoblenergo.json"),
-        CitySource("Чернігів", "Чернігівобленерго", "https://raw.githubusercontent.com/yaroslav2901/OE_OUTAGE_DATA/main/data/Chernihivoblenergo.json"),
-        CitySource("Харків", "Харківобленерго", "https://raw.githubusercontent.com/yaroslav2901/OE_OUTAGE_DATA/main/data/Kharkivoblenerho.json"),
-        CitySource("Хмельницький", "Хмельницькобленерго", "https://raw.githubusercontent.com/yaroslav2901/OE_OUTAGE_DATA/main/data/Khmelnytskoblenerho.json"),
-        CitySource("Львів", "Львівобленерго", "https://raw.githubusercontent.com/yaroslav2901/OE_OUTAGE_DATA/main/data/Lvivoblenerho.json"),
-        CitySource("Полтава", "Полтаваобленерго", "https://raw.githubusercontent.com/yaroslav2901/OE_OUTAGE_DATA/main/data/Poltavaoblenergo.json"),
-        CitySource("Івано-Франківськ", "Прикарпаттяобленерго", "https://raw.githubusercontent.com/yaroslav2901/OE_OUTAGE_DATA/main/data/Prykarpattiaoblenerho.json"),
-        CitySource("Рівне", "Рівнеобленерго", "https://raw.githubusercontent.com/yaroslav2901/OE_OUTAGE_DATA/main/data/Rivneoblenergo.json"),
-        CitySource("Тернопіль", "Тернопільобленерго", "https://raw.githubusercontent.com/yaroslav2901/OE_OUTAGE_DATA/main/data/Ternopiloblenerho.json"),
-        CitySource("Ужгород", "Закарпаттяобленерго", "https://raw.githubusercontent.com/yaroslav2901/OE_OUTAGE_DATA/main/data/Zakarpattiaoblenerho.json"),
-        CitySource("Запоріжжя", "Запоріжжяобленерго", "https://raw.githubusercontent.com/yaroslav2901/OE_OUTAGE_DATA/main/data/Zaporizhzhiaoblenergo.json"),
-        CitySource("Житомир", "Житомиробленерго", "https://raw.githubusercontent.com/yaroslav2901/OE_OUTAGE_DATA/main/data/Zhytomyroblenergo.json")
+    val CITY_SOURCES: Map<String, String> = mapOf(
+        "Київ" to "https://raw.githubusercontent.com/Baskerville42/outage-data-ua/main/data/kyiv.json",
+        "Дніпро" to "https://raw.githubusercontent.com/Baskerville42/outage-data-ua/main/data/dnipro.json",
+        "Одеса" to "https://raw.githubusercontent.com/Baskerville42/outage-data-ua/main/data/odesa.json",
+        "Вінниця" to "https://raw.githubusercontent.com/olnet93/gpv-voe-vinnytsia/main/data/Vinnytsiaoblenerho.json",
+        "Черкаси" to "https://raw.githubusercontent.com/yaroslav2901/OE_OUTAGE_DATA/main/data/Cherkasyoblenergo.json",
+        "Чернігів" to "https://raw.githubusercontent.com/yaroslav2901/OE_OUTAGE_DATA/main/data/Chernihivoblenergo.json",
+        "Харків" to "https://raw.githubusercontent.com/yaroslav2901/OE_OUTAGE_DATA/main/data/Kharkivoblenerho.json",
+        "Хмельницький" to "https://raw.githubusercontent.com/yaroslav2901/OE_OUTAGE_DATA/main/data/Khmelnytskoblenerho.json",
+        "Львів" to "https://raw.githubusercontent.com/yaroslav2901/OE_OUTAGE_DATA/main/data/Lvivoblenerho.json",
+        "Полтава" to "https://raw.githubusercontent.com/yaroslav2901/OE_OUTAGE_DATA/main/data/Poltavaoblenergo.json",
+        "Івано-Франківськ" to "https://raw.githubusercontent.com/yaroslav2901/OE_OUTAGE_DATA/main/data/Prykarpattiaoblenerho.json",
+        "Рівне" to "https://raw.githubusercontent.com/yaroslav2901/OE_OUTAGE_DATA/main/data/Rivneoblenergo.json",
+        "Тернопіль" to "https://raw.githubusercontent.com/yaroslav2901/OE_OUTAGE_DATA/main/data/Ternopiloblenerho.json",
+        "Ужгород" to "https://raw.githubusercontent.com/yaroslav2901/OE_OUTAGE_DATA/main/data/Zakarpattiaoblenerho.json",
+        "Запоріжжя" to "https://raw.githubusercontent.com/yaroslav2901/OE_OUTAGE_DATA/main/data/Zaporizhzhiaoblenergo.json",
+        "Житомир" to "https://raw.githubusercontent.com/yaroslav2901/OE_OUTAGE_DATA/main/data/Zhytomyroblenergo.json"
     )
+
+    private val OBLENERGO_NAMES = mapOf(
+        "Київ" to "ДТЕК Київські електромережі",
+        "Дніпро" to "ДТЕК Дніпровські електромережі",
+        "Одеса" to "ДТЕК Одеські електромережі",
+        "Вінниця" to "Вінницяобленерго",
+        "Черкаси" to "Черкасиобленерго",
+        "Чернігів" to "Чернігівобленерго",
+        "Харків" to "Харківобленерго",
+        "Хмельницький" to "Хмельницькобленерго",
+        "Львів" to "Львівобленерго",
+        "Полтава" to "Полтаваобленерго",
+        "Івано-Франківськ" to "Прикарпаттяобленерго",
+        "Рівне" to "Рівнеобленерго",
+        "Тернопіль" to "Тернопільобленерго",
+        "Ужгород" to "Закарпаттяобленерго",
+        "Запоріжжя" to "Запоріжжяобленерго",
+        "Житомир" to "Житомиробленерго"
+    )
+
+    val CITIES: List<CitySource> = CITY_SOURCES.map { (cityName, url) ->
+        CitySource(
+            name = cityName,
+            oblenergo = OBLENERGO_NAMES[cityName] ?: "${cityName}обленерго",
+            jsonUrl = url
+        )
+    }
 
     fun getCitySource(name: String): CitySource? {
         return CITIES.find { it.name.equals(name, ignoreCase = true) }

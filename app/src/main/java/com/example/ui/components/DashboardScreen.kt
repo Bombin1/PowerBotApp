@@ -325,7 +325,7 @@ fun DashboardScreen(
             ElevatedCard(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .testTag("schedule_widget_card"),
+                    .testTag("schedule_summary_card"),
                 shape = RoundedCornerShape(20.dp),
                 colors = CardDefaults.elevatedCardColors(
                     containerColor = MaterialTheme.colorScheme.surface

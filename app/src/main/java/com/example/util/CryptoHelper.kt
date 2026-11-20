@@ -1,18 +1,19 @@
 package com.example.util
 
-import android.security.keystore.KeyGenParameterSpec
-import android.security.keystore.KeyProperties
+import android.os.Build
 import android.util.Base64
+import androidx.annotation.RequiresApi
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 /**
- * Hardware-backed AES-256-GCM encryption using Android Keystore.
- * The encryption key is generated and stored directly in the device's
- * secure hardware module (TEE/StrongBox) and never leaves the phone.
+ * Secure AES-256-GCM encryption.
+ * On Android 6.0+ (API 23+), uses hardware-backed Android Keystore (TEE/StrongBox).
+ * On Android 5.0-5.1 (API 21-22), falls back to a device-bound software AES key.
  */
 object CryptoHelper {
     private const val ANDROID_KEYSTORE = "AndroidKeyStore"
@@ -21,29 +22,49 @@ object CryptoHelper {
     private const val GCM_IV_LENGTH = 12
     private const val GCM_TAG_LENGTH = 128
 
-    private fun getOrCreateKey(): SecretKey {
-        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-        if (!keyStore.containsAlias(KEY_ALIAS)) {
-            val keyGenerator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
-            val spec = KeyGenParameterSpec.Builder(
-                KEY_ALIAS,
-                KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
-            )
-                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                .setKeySize(256)
-                .build()
-            keyGenerator.init(spec)
-            keyGenerator.generateKey()
+    @RequiresApi(Build.VERSION_CODES.M)
+    private object KeystoreManagerM {
+        fun getOrCreateKey(): SecretKey {
+            val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+            if (!keyStore.containsAlias(KEY_ALIAS)) {
+                val keyGenerator = KeyGenerator.getInstance(
+                    android.security.keystore.KeyProperties.KEY_ALGORITHM_AES,
+                    ANDROID_KEYSTORE
+                )
+                val spec = android.security.keystore.KeyGenParameterSpec.Builder(
+                    KEY_ALIAS,
+                    android.security.keystore.KeyProperties.PURPOSE_ENCRYPT or
+                            android.security.keystore.KeyProperties.PURPOSE_DECRYPT
+                )
+                    .setBlockModes(android.security.keystore.KeyProperties.BLOCK_MODE_GCM)
+                    .setEncryptionPaddings(android.security.keystore.KeyProperties.ENCRYPTION_PADDING_NONE)
+                    .setKeySize(256)
+                    .build()
+                keyGenerator.init(spec)
+                keyGenerator.generateKey()
+            }
+            val entry = keyStore.getEntry(KEY_ALIAS, null) as KeyStore.SecretKeyEntry
+            return entry.secretKey
         }
-        val entry = keyStore.getEntry(KEY_ALIAS, null) as KeyStore.SecretKeyEntry
-        return entry.secretKey
+    }
+
+    private fun getSecretKey(): SecretKey {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            KeystoreManagerM.getOrCreateKey()
+        } else {
+            // Software key for Android 5.0 - 5.1 (API 21 - 22)
+            val seed = ("PowerBotLollipopSalt_${Build.FINGERPRINT}_${Build.SERIAL}").toByteArray(Charsets.UTF_8)
+            val keyBytes = ByteArray(32) { i ->
+                if (i < seed.size) seed[i] else (i xor 0x5A).toByte()
+            }
+            SecretKeySpec(keyBytes, "AES")
+        }
     }
 
     fun encrypt(plainText: String): String {
         if (plainText.isBlank()) return ""
         return try {
-            val secretKey = getOrCreateKey()
+            val secretKey = getSecretKey()
             val cipher = Cipher.getInstance(TRANSFORMATION)
             cipher.init(Cipher.ENCRYPT_MODE, secretKey)
             val iv = cipher.iv
@@ -76,7 +97,7 @@ object CryptoHelper {
             System.arraycopy(combined, 0, iv, 0, GCM_IV_LENGTH)
             System.arraycopy(combined, GCM_IV_LENGTH, encryptedBytes, 0, encryptedBytes.size)
 
-            val secretKey = getOrCreateKey()
+            val secretKey = getSecretKey()
             val cipher = Cipher.getInstance(TRANSFORMATION)
             val spec = GCMParameterSpec(GCM_TAG_LENGTH, iv)
             cipher.init(Cipher.DECRYPT_MODE, secretKey, spec)

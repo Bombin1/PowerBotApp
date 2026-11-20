@@ -140,17 +140,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     preferences.selectedQueue = activeQueue
                 }
 
-                val parsed = ScheduleParser.parseSchedule(json, city, activeQueue)
-                _schedule.value = parsed
+                when (val result = ScheduleParser.parseScheduleJson(json, city, activeQueue)) {
+                    is com.example.data.model.ScheduleParseResult.Success -> {
+                        _schedule.value = result.schedule
+                        _scheduleError.value = null
+                        ScheduleParser.saveScheduleSnapshot(preferences, result.snapshot)
+                    }
+                    is com.example.data.model.ScheduleParseResult.Failure -> {
+                        _schedule.value = null
+                        _scheduleError.value = result.errorMessage
+                    }
+                }
             } else {
-                // Generate fallback schedule with indicator
-                val fallback = ScheduleParser.generateDefaultSchedule(city, queue, "Сьогодні (Офлайн)")
-                _schedule.value = fallback
-                _scheduleError.value = "Не вдалося завантажити оновлення. Показано базовий графік."
+                _schedule.value = null
+                _scheduleError.value = "Не вдалося завантажити графік."
             }
 
             _isLoadingSchedule.value = false
-            com.example.widget.PowerBotWidgetProvider.updateAllWidgets(getApplication())
         }
     }
 

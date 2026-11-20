@@ -84,4 +84,53 @@ class AppPreferences(context: Context) {
     var lastTelegramUpdateId: Long
         get() = prefs.getLong("last_telegram_update_id", 0L)
         set(value) = prefs.edit().putLong("last_telegram_update_id", value).apply()
+
+    var telegramFirstRunNotified: Boolean
+        get() = prefs.getBoolean("telegram_first_run_notified", false)
+        set(value) = prefs.edit().putBoolean("telegram_first_run_notified", value).apply()
+
+    var lastScheduleSnapshot: com.example.data.model.ScheduleSnapshot?
+        get() {
+            val json = prefs.getString("last_schedule_snapshot", "") ?: ""
+            if (json.isBlank()) return null
+            return try {
+                val obj = org.json.JSONObject(json)
+                val list = mutableListOf<String>()
+                val arr = obj.optJSONArray("hourlyStatuses")
+                if (arr != null) {
+                    for (i in 0 until arr.length()) list.add(arr.getString(i))
+                }
+                com.example.data.model.ScheduleSnapshot(
+                    regionId = obj.optString("regionId", ""),
+                    scheduleDate = obj.optString("scheduleDate", ""),
+                    todayTimestamp = obj.optLong("todayTimestamp", 0L),
+                    queueName = obj.optString("queueName", ""),
+                    hourlyStatuses = list,
+                    factUpdate = obj.optString("factUpdate", ""),
+                    lastUpdated = obj.optString("lastUpdated", "")
+                )
+            } catch (e: Exception) {
+                null
+            }
+        }
+        set(value) {
+            if (value == null) {
+                prefs.edit().remove("last_schedule_snapshot").apply()
+            } else {
+                try {
+                    val obj = org.json.JSONObject().apply {
+                        put("regionId", value.regionId)
+                        put("scheduleDate", value.scheduleDate)
+                        put("todayTimestamp", value.todayTimestamp)
+                        put("queueName", value.queueName)
+                        put("hourlyStatuses", org.json.JSONArray(value.hourlyStatuses))
+                        put("factUpdate", value.factUpdate)
+                        put("lastUpdated", value.lastUpdated)
+                    }
+                    prefs.edit().putString("last_schedule_snapshot", obj.toString()).apply()
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
 }

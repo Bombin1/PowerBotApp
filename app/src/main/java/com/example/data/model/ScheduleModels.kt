@@ -44,5 +44,29 @@ data class CitySchedule(
     val dateLabel: String,
     val hours: List<HourSlot>,
     val intervals: List<OutageInterval>,
+    val todayTimestamp: Long = 0L,
+    val factUpdate: String = "",
+    val lastUpdatedIso: String = "",
     val lastUpdated: Long = System.currentTimeMillis()
 )
+
+data class ScheduleSnapshot(
+    val regionId: String,
+    val scheduleDate: String, // "dd.MM.yyyy"
+    val todayTimestamp: Long, // 1792184400
+    val queueName: String,    // "GPV3.1"
+    val hourlyStatuses: List<String>, // 24 values ("yes", "no", "maybe")
+    val factUpdate: String = "",
+    val lastUpdated: String = ""
+)
+
+data class ScheduleChangeResult(
+    val isChanged: Boolean,
+    val isDateChanged: Boolean,
+    val reason: String
+)
+
+sealed class ScheduleParseResult {
+    data class Success(val schedule: CitySchedule, val snapshot: ScheduleSnapshot) : ScheduleParseResult()
+    data class Failure(val errorMessage: String) : ScheduleParseResult()
+}
