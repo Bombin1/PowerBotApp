@@ -186,7 +186,6 @@ fun MainApp(viewModel: MainViewModel = viewModel()) {
             when (currentTab) {
                 NavigationTab.DASHBOARD -> DashboardScreen(
                     viewModel = viewModel,
-                    onNavigateToSchedule = { selectedTabOrdinal = NavigationTab.SCHEDULE.ordinal },
                     onNavigateToSettings = { selectedTabOrdinal = NavigationTab.SETTINGS.ordinal }
                 )
                 NavigationTab.SCHEDULE -> ScheduleScreen(

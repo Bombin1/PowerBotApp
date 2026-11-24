@@ -15,6 +15,157 @@ class AppPreferences(context: Context) {
         get() = prefs.getString("selected_queue", "GPV1.1") ?: "GPV1.1"
         set(value) = prefs.edit().putString("selected_queue", value).apply()
 
+    var selectedQueues: List<String>
+        get() {
+            val raw = prefs.getString("selected_queues", null)
+            if (!raw.isNullOrBlank()) {
+                try {
+                    val arr = org.json.JSONArray(raw)
+                    val list = mutableListOf<String>()
+                    for (i in 0 until arr.length()) {
+                        val item = arr.optString(i, "").trim()
+                        if (item.isNotBlank() && !list.contains(item)) {
+                            list.add(item)
+                        }
+                    }
+                    if (list.isNotEmpty()) return list.take(5)
+                } catch (_: Exception) {
+                }
+            }
+            return listOf(selectedQueue)
+        }
+        set(value) {
+            val sanitized = value.map { it.trim() }.filter { it.isNotBlank() }.distinct().take(5)
+            val finalList = if (sanitized.isEmpty()) listOf(selectedQueue) else sanitized
+            val arr = org.json.JSONArray()
+            finalList.forEach { arr.put(it) }
+            prefs.edit()
+                .putString("selected_queues", arr.toString())
+                .putString("selected_queue", finalList.first())
+                .apply()
+        }
+
+    var intervalEnabledQueues: Set<String>
+        get() {
+            if (!prefs.contains("interval_enabled_queues")) {
+                return setOf(selectedQueues.first())
+            }
+            val raw = prefs.getString("interval_enabled_queues", "[]") ?: "[]"
+            return try {
+                val arr = org.json.JSONArray(raw)
+                val set = linkedSetOf<String>()
+                for (i in 0 until arr.length()) {
+                    val item = arr.optString(i, "").trim()
+                    if (item.isNotBlank()) set.add(item)
+                }
+                set
+            } catch (_: Exception) {
+                setOf(selectedQueues.first())
+            }
+        }
+        set(value) {
+            val arr = org.json.JSONArray()
+            value.forEach { arr.put(it) }
+            prefs.edit().putString("interval_enabled_queues", arr.toString()).apply()
+        }
+
+    var selectedScheduleSlots: List<com.example.data.model.SelectedScheduleSlot>
+        get() {
+            if (!prefs.contains("selected_schedule_slots")) {
+                val defaultCity = selectedCity
+                return selectedQueues.map {
+                    com.example.data.model.SelectedScheduleSlot(city = defaultCity, queue = it)
+                }.take(5)
+            }
+            val raw = prefs.getString("selected_schedule_slots", "[]") ?: "[]"
+            return try {
+                val arr = org.json.JSONArray(raw)
+                val list = mutableListOf<com.example.data.model.SelectedScheduleSlot>()
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val city = obj.optString("city", "").trim()
+                    val queue = obj.optString("queue", "").trim()
+                    if (city.isNotBlank() && queue.isNotBlank()) {
+                        val slot = com.example.data.model.SelectedScheduleSlot(city, queue)
+                        if (!list.contains(slot)) {
+                            list.add(slot)
+                        }
+                    }
+                }
+                list.take(5)
+            } catch (_: Exception) {
+                listOf(com.example.data.model.SelectedScheduleSlot(selectedCity, selectedQueue))
+            }
+        }
+        set(value) {
+            val sanitized = value
+                .map {
+                    com.example.data.model.SelectedScheduleSlot(
+                        city = it.city.trim(),
+                        queue = it.queue.trim()
+                    )
+                }
+                .filter { it.city.isNotBlank() && it.queue.isNotBlank() }
+                .distinct()
+                .take(5)
+            val arr = org.json.JSONArray()
+            sanitized.forEach { slot ->
+                val obj = org.json.JSONObject().apply {
+                    put("city", slot.city)
+                    put("queue", slot.queue)
+                }
+                arr.put(obj)
+            }
+            val editor = prefs.edit().putString("selected_schedule_slots", arr.toString())
+            sanitized.firstOrNull()?.let { primary ->
+                editor.putString("selected_queue", primary.queue)
+            }
+            editor.apply()
+        }
+
+    var intervalEnabledSlotKeys: Set<String>
+        get() {
+            if (!prefs.contains("interval_enabled_slots")) {
+                val defaultCity = selectedCity
+                return intervalEnabledQueues.map { "$defaultCity::$it" }.toSet()
+            }
+            val raw = prefs.getString("interval_enabled_slots", "[]") ?: "[]"
+            return try {
+                val arr = org.json.JSONArray(raw)
+                val set = linkedSetOf<String>()
+                for (i in 0 until arr.length()) {
+                    val item = arr.optString(i, "").trim()
+                    if (item.isNotBlank()) set.add(item)
+                }
+                set
+            } catch (_: Exception) {
+                emptySet()
+            }
+        }
+        set(value) {
+            val arr = org.json.JSONArray()
+            value.forEach { arr.put(it) }
+            prefs.edit().putString("interval_enabled_slots", arr.toString()).apply()
+        }
+
+    fun getCachedCityJson(city: String): String? {
+        val perCity = prefs.getString("cached_city_json_$city", null)
+        if (!perCity.isNullOrBlank()) return perCity
+        if (city == selectedCity) {
+            val legacy = cachedScheduleJson
+            if (legacy.isNotBlank()) return legacy
+        }
+        return null
+    }
+
+    fun setCachedCityJson(city: String, json: String) {
+        val editor = prefs.edit().putString("cached_city_json_$city", json)
+        if (city == selectedCity) {
+            editor.putString("cached_schedule_json", json)
+        }
+        editor.apply()
+    }
+
     var scheduleNotificationsEnabled: Boolean
         get() = prefs.getBoolean("schedule_notifications", false)
         set(value) = prefs.edit().putBoolean("schedule_notifications", value).apply()

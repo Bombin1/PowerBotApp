@@ -665,7 +665,7 @@ class PowerMonitorService : Service() {
         scheduleCheckJob?.cancel()
         scheduleCheckJob = serviceScope.launch {
             while (isActive) {
-                delay(30 * 60 * 1000L) // Check every 30 minutes
+                delay(60 * 60 * 1000L) // Check GitHub once per hour
                 try {
                     if (preferences.scheduleNotificationsEnabled) {
                         val city = preferences.selectedCity
@@ -674,6 +674,7 @@ class PowerMonitorService : Service() {
                         if (source != null) {
                             val json = ScheduleParser.fetchJson(source.jsonUrl)
                             if (json != null) {
+                                preferences.cachedScheduleJson = json
                                 when (val parseResult = ScheduleParser.parseScheduleJson(json, city, queue)) {
                                     is com.example.data.model.ScheduleParseResult.Success -> {
                                         val newSnapshot = parseResult.snapshot

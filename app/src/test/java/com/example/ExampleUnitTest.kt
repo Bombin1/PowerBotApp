@@ -1,6 +1,7 @@
 package com.example
 
 import com.example.data.model.CitySchedule
+import com.example.data.model.HourSlot
 import com.example.data.model.OutageInterval
 import com.example.data.model.OutageStatus
 import com.example.data.model.PowerEvent
@@ -11,6 +12,7 @@ import com.example.data.remote.ScheduleParser
 import com.example.util.GitHubUpdater
 import com.example.util.MonthKey
 import com.example.util.PowerStatsHelper
+import com.example.util.ScheduleCombiner
 import org.junit.Assert.*
 import org.junit.Test
 import java.util.Calendar
@@ -708,6 +710,150 @@ class ExampleUnitTest {
             }
         """.trimIndent()
         assertEquals("3.5.4", GitHubUpdater.parseGradleVersionName(gradleSnippet))
+    }
+
+    /**
+     * v3.5.4: Перевірка сумування кількох графіків у спільному "Розкладі за інтервалами"
+     */
+    @Test
+    fun testV354_ScheduleCombiner_EmptySingleAndMultiple() {
+        // 0 schedules
+        val emptyResult = ScheduleCombiner.combineSchedules(emptyList())
+        assertTrue(emptyResult.intervals.isEmpty())
+        assertEquals(0, emptyResult.onlineHours)
+        assertEquals(0, emptyResult.outageHours)
+
+        fun buildSchedule(queue: String, statuses: List<OutageStatus>): CitySchedule {
+            val hours = statuses.mapIndexed { idx, st ->
+                HourSlot(
+                    hour = idx + 1,
+                    timeLabel = String.format("%02d:00-%02d:00", idx, idx + 1),
+                    status = st,
+                    statusDescription = when (st) {
+                        OutageStatus.ONLINE -> "Світло є"
+                        OutageStatus.OUTAGE -> "Світла немає"
+                        OutageStatus.MAYBE -> "Можливе відключення"
+                    }
+                )
+            }
+            val intervals = mutableListOf<OutageInterval>()
+            var cur = statuses[0]
+            var start = 0
+            for (h in 1 until 24) {
+                if (statuses[h] != cur) {
+                    intervals.add(
+                        OutageInterval(
+                            startHour = String.format("%02d:00", start),
+                            endHour = String.format("%02d:00", h),
+                            status = cur,
+                            description = "",
+                            durationHours = h - start
+                        )
+                    )
+                    cur = statuses[h]
+                    start = h
+                }
+            }
+            intervals.add(
+                OutageInterval(
+                    startHour = String.format("%02d:00", start),
+                    endHour = "24:00",
+                    status = cur,
+                    description = "",
+                    durationHours = 24 - start
+                )
+            )
+            return CitySchedule("Київ", queue, "24.11.2026", hours, intervals)
+        }
+
+        val q1Statuses = MutableList(24) { OutageStatus.ONLINE }.apply {
+            // Outage 02:00 - 05:00 (hours 2, 3, 4)
+            this[2] = OutageStatus.OUTAGE
+            this[3] = OutageStatus.OUTAGE
+            this[4] = OutageStatus.OUTAGE
+            // Maybe 10:00 - 12:00 (hours 10, 11)
+            this[10] = OutageStatus.MAYBE
+            this[11] = OutageStatus.MAYBE
+        }
+        val q2Statuses = MutableList(24) { OutageStatus.ONLINE }.apply {
+            // Outage 04:00 - 07:00 (overlaps hour 4 with q1)
+            this[4] = OutageStatus.OUTAGE
+            this[5] = OutageStatus.OUTAGE
+            this[6] = OutageStatus.OUTAGE
+            // Outage 11:00 - 13:00 (hour 11 overrides q1's MAYBE -> OUTAGE)
+            this[11] = OutageStatus.OUTAGE
+            this[12] = OutageStatus.OUTAGE
+        }
+
+        val s1 = buildSchedule("GPV1.1", q1Statuses)
+        val s2 = buildSchedule("GPV2.2", q2Statuses)
+
+        // Single schedule preserves its own intervals
+        val singleResult = ScheduleCombiner.combineSchedules(listOf(s1))
+        assertEquals(listOf("1.1"), singleResult.activeQueueLabels)
+        assertEquals(3, singleResult.outageHours)
+        assertEquals(2, singleResult.maybeHours)
+        assertEquals(19, singleResult.onlineHours)
+
+        // Two schedules merge with priority OUTAGE > MAYBE > ONLINE
+        val merged = ScheduleCombiner.combineSchedules(listOf(s1, s2))
+        assertEquals(listOf("1.1", "2.2"), merged.activeQueueLabels)
+        // Outage hours: 2,3,4,5,6 (5h) + 11,12 (2h) = 7h
+        assertEquals(7, merged.outageHours)
+        // Maybe hours: 10 (1h)
+        assertEquals(1, merged.maybeHours)
+        // Online hours: 16h
+        assertEquals(16, merged.onlineHours)
+
+        val outage0207 = merged.intervals.find { it.startHour == "02:00" && it.endHour == "07:00" }
+        assertNotNull(outage0207)
+        assertEquals(OutageStatus.OUTAGE, outage0207!!.status)
+        assertEquals(5, outage0207.durationHours)
+        assertEquals(listOf("1.1", "2.2"), merged.affectedQueuesByIntervalKey["02:00-07:00"])
+
+        val maybe1011 = merged.intervals.find { it.startHour == "10:00" && it.endHour == "11:00" }
+        assertNotNull(maybe1011)
+        assertEquals(OutageStatus.MAYBE, maybe1011!!.status)
+        assertEquals(listOf("1.1"), merged.affectedQueuesByIntervalKey["10:00-11:00"])
+
+        val outage1113 = merged.intervals.find { it.startHour == "11:00" && it.endHour == "13:00" }
+        assertNotNull(outage1113)
+        assertEquals(OutageStatus.OUTAGE, outage1113!!.status)
+        assertEquals(listOf("2.2", "1.1"), merged.affectedQueuesByIntervalKey["11:00-13:00"])
+    }
+
+    @Test
+    fun testV354_ScheduleCombiner_MultipleCitiesIncludesCityNames() {
+        fun buildCitySchedule(city: String, queue: String, outageHour: Int): CitySchedule {
+            val statuses = MutableList(24) { OutageStatus.ONLINE }.apply { this[outageHour] = OutageStatus.OUTAGE }
+            val hours = statuses.mapIndexed { idx, st ->
+                HourSlot(idx + 1, String.format("%02d:00-%02d:00", idx, idx + 1), st, "")
+            }
+            return CitySchedule(city, queue, "24.11.2026", hours, emptyList())
+        }
+
+        val kyiv = buildCitySchedule("Київ", "GPV1.1", 8)
+        val khmelnytskyi = buildCitySchedule("Хмельницький", "GPV1.1", 14)
+
+        val merged = ScheduleCombiner.combineSchedules(listOf(kyiv, khmelnytskyi))
+        assertEquals(listOf("Київ 1.1", "Хмельницький 1.1"), merged.activeQueueLabels)
+        assertEquals(2, merged.outageHours)
+        assertEquals(listOf("Київ 1.1"), merged.affectedQueuesByIntervalKey["08:00-09:00"])
+        assertEquals(listOf("Хмельницький 1.1"), merged.affectedQueuesByIntervalKey["14:00-15:00"])
+    }
+
+    @Test
+    fun testV354_ScheduleParser_BuildFreshUrlBypassesCache() {
+        val baseUrl = "https://raw.githubusercontent.com/Baskerville42/outage-data-ua/main/data/kyiv.json"
+        assertEquals(baseUrl, ScheduleParser.buildFreshUrl(baseUrl, bypassCache = false, timestampMs = 123456L))
+        assertEquals(
+            "$baseUrl?_ts=123456",
+            ScheduleParser.buildFreshUrl(baseUrl, bypassCache = true, timestampMs = 123456L)
+        )
+        assertEquals(
+            "$baseUrl?foo=1&_ts=123456",
+            ScheduleParser.buildFreshUrl("$baseUrl?foo=1", bypassCache = true, timestampMs = 123456L)
+        )
     }
 }
 

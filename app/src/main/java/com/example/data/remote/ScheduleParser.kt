@@ -20,7 +20,28 @@ object ScheduleParser {
 
     private val KYIV_TIME_ZONE: TimeZone = TimeZone.getTimeZone("Europe/Kyiv")
 
-    fun fetchJson(urlString: String): String? {
+    fun buildFreshUrl(
+        urlString: String,
+        bypassCache: Boolean,
+        timestampMs: Long = System.currentTimeMillis()
+    ): String {
+        if (!bypassCache) return urlString
+        val separator = if (urlString.contains("?")) "&" else "?"
+        return "${urlString}${separator}_ts=$timestampMs"
+    }
+
+    fun fetchJson(urlString: String, bypassCache: Boolean = true): String? {
+        val primaryUrl = buildFreshUrl(urlString, bypassCache)
+        val primaryResult = executeGetRequest(primaryUrl, bypassCache)
+        if (primaryResult != null) return primaryResult
+        // Fallback without query param if strict endpoint rejected _ts
+        if (bypassCache && primaryUrl != urlString) {
+            return executeGetRequest(urlString, bypassCache = true)
+        }
+        return null
+    }
+
+    private fun executeGetRequest(urlString: String, bypassCache: Boolean): String? {
         var connection: HttpURLConnection? = null
         return try {
             val url = URL(urlString)
@@ -28,6 +49,12 @@ object ScheduleParser {
                 connectTimeout = 12000
                 readTimeout = 12000
                 requestMethod = "GET"
+                instanceFollowRedirects = true
+                if (bypassCache) {
+                    useCaches = false
+                    setRequestProperty("Cache-Control", "no-cache, no-store, must-revalidate")
+                    setRequestProperty("Pragma", "no-cache")
+                }
                 setRequestProperty("User-Agent", "PowerBot-Android/${com.example.BuildConfig.VERSION_NAME}")
                 setRequestProperty("Accept", "application/json")
             }

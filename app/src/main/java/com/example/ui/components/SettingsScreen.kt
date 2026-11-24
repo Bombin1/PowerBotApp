@@ -82,14 +82,14 @@ fun SettingsScreen(
     val context = LocalContext.current
     val prefs = viewModel.preferences
 
-    var telegramEnabled by remember { mutableStateOf(prefs.telegramEnabled) }
+    val telegramEnabled by viewModel.isTelegramEnabled.collectAsState()
     var botToken by remember { mutableStateOf(prefs.telegramBotToken) }
     var chatId by remember { mutableStateOf(prefs.telegramChatId) }
     var adminId by remember { mutableStateOf(prefs.telegramAdminId) }
     var isTokenVisible by remember { mutableStateOf(false) }
     var botCommandsEnabled by remember { mutableStateOf(prefs.telegramBotCommandsEnabled) }
 
-    var backgroundServiceEnabled by remember { mutableStateOf(prefs.backgroundServiceEnabled) }
+    val backgroundServiceEnabled by viewModel.isSentinelActive.collectAsState()
     var soundAlertsEnabled by remember { mutableStateOf(prefs.soundAlertsEnabled) }
     var vibrationAlertsEnabled by remember { mutableStateOf(prefs.vibrationAlertsEnabled) }
     var scheduleNotificationsEnabled by remember { mutableStateOf(prefs.scheduleNotificationsEnabled) }
@@ -165,9 +165,7 @@ fun SettingsScreen(
                         Switch(
                             checked = telegramEnabled,
                             onCheckedChange = {
-                                telegramEnabled = it
-                                prefs.telegramEnabled = it
-                                viewModel.refreshTelegramPolling()
+                                viewModel.setTelegramEnabled(it)
                             },
                             modifier = Modifier.testTag("telegram_switch")
                         )
@@ -361,9 +359,9 @@ fun SettingsScreen(
                         Switch(
                             checked = backgroundServiceEnabled,
                             onCheckedChange = {
-                                backgroundServiceEnabled = it
                                 viewModel.toggleBackgroundService(it)
-                            }
+                            },
+                            modifier = Modifier.testTag("sentinel_switch")
                         )
                     }
 
@@ -419,7 +417,7 @@ fun SettingsScreen(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text("Оновлення графіка ГПВ", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
-                            Text("Перевірка змін у графіку кожні 30 хв", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Перевірка змін у графіку на GitHub раз на годину", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Switch(
                             checked = scheduleNotificationsEnabled,

@@ -28,23 +28,18 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.ElectricMeter
 import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.Power
 import androidx.compose.material.icons.filled.PowerOff
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Thermostat
-import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -61,7 +56,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.data.model.OutageStatus
 import com.example.data.model.PlugType
 import com.example.ui.MainViewModel
 import com.example.ui.theme.ElectricBlue
@@ -74,17 +68,13 @@ import java.util.Locale
 @Composable
 fun DashboardScreen(
     viewModel: MainViewModel,
-    onNavigateToSchedule: () -> Unit,
     onNavigateToSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val batteryInfo by viewModel.batteryInfo.collectAsState()
     val durationMinutes by viewModel.stateDurationMinutes.collectAsState()
-    val schedule by viewModel.schedule.collectAsState()
-    val currentSlot = viewModel.getCurrentHourSlot()
-    val countdownMinutes = viewModel.getMinutesUntilNextScheduleEvent()
-    val selectedCity by viewModel.selectedCity.collectAsState()
-    val selectedQueue by viewModel.selectedQueue.collectAsState()
+    val isSentinelActive by viewModel.isSentinelActive.collectAsState()
+    val isTelegramEnabled by viewModel.isTelegramEnabled.collectAsState()
 
     val isOnline = batteryInfo.isPlugged
 
@@ -218,28 +208,57 @@ fun DashboardScreen(
 
                         Spacer(modifier = Modifier.height(16.dp))
 
-                        // Sentinel status line
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(Color.Black.copy(alpha = 0.25f))
-                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                        // Interactive Sentinel status badge
+                        Surface(
+                            onClick = { viewModel.toggleBackgroundService(!isSentinelActive) },
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (isSentinelActive) {
+                                Color.Black.copy(alpha = 0.28f)
+                            } else {
+                                Color.Black.copy(alpha = 0.42f)
+                            },
+                            border = androidx.compose.foundation.BorderStroke(
+                                1.dp,
+                                if (isSentinelActive) {
+                                    ElectricYellow.copy(alpha = 0.45f)
+                                } else {
+                                    Color.White.copy(alpha = 0.2f)
+                                }
+                            ),
+                            modifier = Modifier.testTag("sentinel_status_badge")
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.NotificationsActive,
-                                contentDescription = null,
-                                tint = ElectricYellow,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            val isTgOn = viewModel.preferences.telegramEnabled
-                            Text(
-                                text = "PowerBot Sentinel: Активний" + if (isTgOn) " • Telegram 🔔" else "",
-                                fontSize = 12.sp,
-                                color = Color.White.copy(alpha = 0.9f)
-                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (isSentinelActive) {
+                                        Icons.Default.NotificationsActive
+                                    } else {
+                                        Icons.Default.NotificationsOff
+                                    },
+                                    contentDescription = if (isSentinelActive) {
+                                        "PowerBot Sentinel активний, натисніть щоб вимкнути"
+                                    } else {
+                                        "PowerBot Sentinel не активний, натисніть щоб увімкнути"
+                                    },
+                                    tint = if (isSentinelActive) ElectricYellow else Color(0xFFCBD5E1),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                val statusText = if (isSentinelActive) {
+                                    "PowerBot Sentinel: Активний" + if (isTelegramEnabled) " • Telegram 🔔" else ""
+                                } else {
+                                    "PowerBot Sentinel: Не активний"
+                                }
+                                Text(
+                                    text = statusText,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = if (isSentinelActive) Color.White.copy(alpha = 0.95f) else Color(0xFFCBD5E1)
+                                )
+                            }
                         }
                     }
                 }
@@ -320,168 +339,7 @@ fun DashboardScreen(
             }
         }
 
-        // 3. OUTAGE SCHEDULE WIDGET FOR TODAY
-        item {
-            ElevatedCard(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("schedule_summary_card"),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.elevatedCardColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                )
-            ) {
-                Column(modifier = Modifier.padding(18.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text(
-                                text = "Графік відключень (ГПВ)",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = "$selectedCity • Черга ${selectedQueue.replace("GPV", "")}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-
-                        IconButton(
-                            onClick = { viewModel.refreshSchedule() },
-                            modifier = Modifier.size(36.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Refresh,
-                                contentDescription = "Оновити графік",
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(14.dp))
-
-                    if (currentSlot != null) {
-                        val slotColor = when (currentSlot.status) {
-                            OutageStatus.ONLINE -> LightGreenOnline
-                            OutageStatus.OUTAGE -> LightRedOutage
-                            OutageStatus.MAYBE -> LightAmberMaybe
-                        }
-                        val slotBg = slotColor.copy(alpha = 0.15f)
-
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = slotBg,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(12.dp)
-                                            .clip(CircleShape)
-                                            .background(slotColor)
-                                    )
-                                    Spacer(modifier = Modifier.width(10.dp))
-                                    Column {
-                                        Text(
-                                            text = "Зараз (${currentSlot.timeLabel}):",
-                                            fontSize = 12.sp,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                        Text(
-                                            text = currentSlot.statusDescription,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 15.sp,
-                                            color = slotColor
-                                        )
-                                    }
-                                }
-
-                                if (countdownMinutes != null && countdownMinutes > 0) {
-                                    val countHours = countdownMinutes / 60
-                                    val countMins = countdownMinutes % 60
-                                    val countText = if (countHours > 0) "${countHours}г ${countMins}хв" else "${countMins}хв"
-                                    Surface(
-                                        shape = RoundedCornerShape(8.dp),
-                                        color = MaterialTheme.colorScheme.surface
-                                    ) {
-                                        Text(
-                                            text = "Зміна через: $countText",
-                                            fontSize = 12.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                            color = MaterialTheme.colorScheme.onSurface
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    // 24h Visual Mini-Bar
-                    if (schedule != null) {
-                        Text(
-                            text = "Таймлайн на добу (00:00 - 24:00):",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(16.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                        ) {
-                            for (slot in schedule!!.hours) {
-                                val color = when (slot.status) {
-                                    OutageStatus.ONLINE -> LightGreenOnline
-                                    OutageStatus.OUTAGE -> LightRedOutage
-                                    OutageStatus.MAYBE -> LightAmberMaybe
-                                }
-                                Box(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .fillMaxSize()
-                                        .background(color)
-                                        .border(0.5.dp, MaterialTheme.colorScheme.surface.copy(alpha = 0.5f))
-                                )
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    OutlinedButton(
-                        onClick = onNavigateToSchedule,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("open_schedule_button"),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Timeline,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Відкрити повний графік та змінити чергу")
-                    }
-                }
-            }
-        }
-
-        // 4. TELEGRAM LINK SHORTCUT CARD
+        // 3. TELEGRAM LINK SHORTCUT CARD
         item {
             Card(
                 modifier = Modifier

@@ -70,3 +70,10 @@ sealed class ScheduleParseResult {
     data class Success(val schedule: CitySchedule, val snapshot: ScheduleSnapshot) : ScheduleParseResult()
     data class Failure(val errorMessage: String) : ScheduleParseResult()
 }
+
+data class SelectedScheduleSlot(
+    val city: String,
+    val queue: String
+) {
+    val slotKey: String get() = "$city::$queue"
+}
