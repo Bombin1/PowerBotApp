@@ -855,7 +855,114 @@ class ExampleUnitTest {
             ScheduleParser.buildFreshUrl("$baseUrl?foo=1", bypassCache = true, timestampMs = 123456L)
         )
     }
+
+    /**
+     * v3.5.5: Хмельницький оновився о 22:06 — у fact.data є старий графік "1795644000" (26.11.2026)
+     * і новий графік "1795730400" (27.11.2026). Парсер має обрати "1795730400" і виявити зміну.
+     */
+    @Test
+    fun testV355_KhmelnytskyiMultiDateUpdate_PicksNewerScheduleAndDetectsChange() {
+        val oldOnlyJson = """
+        {
+          "regionId": "Khmelnytskoblenerho",
+          "lastUpdated": "2026-11-26T10:00:00.000Z",
+          "fact": {
+            "today": 1795644000,
+            "update": "26.11.2026 12:00",
+            "data": {
+              "1795644000": {
+                "GPV3.1": {
+                  "1": "yes", "2": "yes", "3": "yes", "4": "yes", "5": "yes", "6": "yes",
+                  "7": "yes", "8": "yes", "9": "yes", "10": "yes", "11": "yes", "12": "yes",
+                  "13": "yes", "14": "yes", "15": "yes", "16": "yes", "17": "yes", "18": "yes",
+                  "19": "yes", "20": "yes", "21": "yes", "22": "yes", "23": "yes", "24": "yes"
+                }
+              }
+            }
+          }
+        }
+        """.trimIndent()
+
+        val updatedMultiDateJson = """
+        {
+          "regionId": "Khmelnytskoblenerho",
+          "lastUpdated": "2026-11-26T20:06:00.000Z",
+          "fact": {
+            "today": 1795644000,
+            "update": "26.11.2026 22:06",
+            "data": {
+              "1795644000": {
+                "GPV3.1": {
+                  "1": "yes", "2": "yes", "3": "yes", "4": "yes", "5": "yes", "6": "yes",
+                  "7": "yes", "8": "yes", "9": "yes", "10": "yes", "11": "yes", "12": "yes",
+                  "13": "yes", "14": "yes", "15": "yes", "16": "yes", "17": "yes", "18": "yes",
+                  "19": "yes", "20": "yes", "21": "yes", "22": "yes", "23": "yes", "24": "yes"
+                }
+              },
+              "1795730400": {
+                "GPV3.1": {
+                  "1": "yes", "2": "yes", "3": "yes", "4": "yes", "5": "yes", "6": "yes",
+                  "7": "no",  "8": "no",  "9": "no",  "10": "yes", "11": "yes", "12": "yes",
+                  "13": "yes", "14": "yes", "15": "yes", "16": "no", "17": "no", "18": "no",
+                  "19": "yes", "20": "yes", "21": "yes", "22": "yes", "23": "yes", "24": "yes"
+                }
+              }
+            }
+          }
+        }
+        """.trimIndent()
+
+        val oldResult = ScheduleParser.parseScheduleJson(oldOnlyJson, "Хмельницький", "GPV3.1")
+        assertTrue(oldResult is ScheduleParseResult.Success)
+        val oldSnapshot = (oldResult as ScheduleParseResult.Success).snapshot
+        assertEquals("26.11.2026", oldResult.schedule.dateLabel)
+
+        val newResult = ScheduleParser.parseScheduleJson(updatedMultiDateJson, "Хмельницький", "GPV3.1")
+        assertTrue("Updated multi-date JSON must parse cleanly", newResult is ScheduleParseResult.Success)
+        val newSuccess = newResult as ScheduleParseResult.Success
+        assertEquals("27.11.2026", newSuccess.schedule.dateLabel)
+        assertEquals(1795730400L, newSuccess.schedule.todayTimestamp)
+        assertEquals("26.11.2026 22:06", newSuccess.schedule.factUpdate)
+
+        val outageIntervals = newSuccess.schedule.intervals.filter { it.status == OutageStatus.OUTAGE }
+        assertEquals(2, outageIntervals.size)
+        assertEquals("06:00", outageIntervals[0].startHour)
+        assertEquals("09:00", outageIntervals[0].endHour)
+        assertEquals("15:00", outageIntervals[1].startHour)
+        assertEquals("18:00", outageIntervals[1].endHour)
+
+        val changeResult = ScheduleParser.detectScheduleChanges(oldSnapshot, newSuccess.snapshot)
+        assertTrue("Change MUST be detected when newer date appears in fact.data", changeResult.isChanged)
+        assertTrue(changeResult.isDateChanged)
+    }
+
+    @Test
+    fun testV355_GitHubUpdater_PreferMainCandidatesAndCacheBuster() {
+        val candidates = GitHubUpdater.buildFallbackApkCandidates("v3.5.5", preferMain = true)
+        assertEquals(
+            listOf(
+                "https://raw.githubusercontent.com/Bombin1/PowerBotApp/main/PowerBot.apk",
+                "https://raw.githubusercontent.com/Bombin1/PowerBotApp/main/app-debug.apk",
+                "https://raw.githubusercontent.com/Bombin1/PowerBotApp/v3.5.5/PowerBot.apk",
+                "https://raw.githubusercontent.com/Bombin1/PowerBotApp/v3.5.5/app-debug.apk"
+            ),
+            candidates
+        )
+
+        val rawUrl = "https://raw.githubusercontent.com/Bombin1/PowerBotApp/main/PowerBot.apk"
+        assertEquals(
+            "$rawUrl?_ts=99999",
+            GitHubUpdater.appendCacheBuster(rawUrl, timestampMs = 99999L)
+        )
+
+        val signedUrl = "https://objects.githubusercontent.com/github-production-release-asset/123?X-Amz-Signature=abc"
+        assertEquals(
+            signedUrl,
+            GitHubUpdater.appendCacheBuster(signedUrl, timestampMs = 99999L)
+        )
+    }
 }
+
 
 
 

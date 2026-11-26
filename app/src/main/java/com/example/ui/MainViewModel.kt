@@ -247,6 +247,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             current.toMutableList().apply { set(oldIndex, newSlot) }
         }
 
+        preferences.setSlotScheduleSnapshot(oldSlot.slotKey, null)
         updateSlotsState(updatedSlots, updatedIntervals)
         parseSlotsFromCacheOrNetwork(updatedSlots)
     }
@@ -256,6 +257,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val current = _selectedSlots.value
         if (slot !in current) return
 
+        preferences.setSlotScheduleSnapshot(slot.slotKey, null)
         val updatedSlots = current - slot
         val updatedIntervals = _intervalEnabledSlotKeys.value - slot.slotKey
         updateSlotsState(updatedSlots, updatedIntervals)
@@ -370,6 +372,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 emitParsedSlots(_selectedSlots.value)
 
                 if (userInitiated && refreshRequestId.get() == currentRequestId) {
+                    if (preferences.backgroundServiceEnabled && preferences.scheduleNotificationsEnabled) {
+                        PowerMonitorService.triggerScheduleCheck(getApplication())
+                    }
                     val failedCities = results.filter { it.second == null }.map { it.first }
                     val timeStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
                     if (failedCities.isEmpty()) {
@@ -463,7 +468,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val errorsMap = linkedMapOf<String, String>()
         var firstError: String? = null
 
-        normalizedSlots.forEachIndexed { index, slot ->
+        normalizedSlots.forEach { slot ->
             val cityJson = cityJsonCache[slot.city] ?: preferences.getCachedCityJson(slot.city)
             if (cityJson == null) {
                 val err = "Не вдалося завантажити графік для ${slot.city}."
@@ -473,9 +478,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 when (val result = ScheduleParser.parseScheduleJson(cityJson, slot.city, slot.queue)) {
                     is ScheduleParseResult.Success -> {
                         parsedMap[slot.slotKey] = result.schedule
-                        if (index == 0) {
-                            ScheduleParser.saveScheduleSnapshot(preferences, result.snapshot)
-                        }
                     }
                     is ScheduleParseResult.Failure -> {
                         errorsMap[slot.slotKey] = result.errorMessage

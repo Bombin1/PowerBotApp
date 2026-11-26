@@ -66,6 +66,7 @@ import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.runtime.LaunchedEffect
 import com.example.BuildConfig
+import com.example.service.PowerMonitorService
 import com.example.ui.MainViewModel
 import com.example.ui.theme.ElectricBlue
 import com.example.ui.theme.ElectricYellow
@@ -424,6 +425,9 @@ fun SettingsScreen(
                             onCheckedChange = {
                                 scheduleNotificationsEnabled = it
                                 prefs.scheduleNotificationsEnabled = it
+                                if (it && backgroundServiceEnabled) {
+                                    PowerMonitorService.triggerScheduleCheck(context)
+                                }
                             }
                         )
                     }

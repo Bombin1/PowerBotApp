@@ -103,28 +103,6 @@ object ScheduleParser {
     fun getQueueSchedule(factData: JSONObject, todayTimestamp: Long, queueName: String): JSONObject? {
         val normToday = if (todayTimestamp > 0L) normalizeTimestamp(todayTimestamp) else 0L
 
-        // 1. Variant A: Try today's date if provided
-        if (normToday > 0L) {
-            val todayKey = normToday.toString()
-            var dayObj = factData.optJSONObject(todayKey)
-            if (dayObj == null) {
-                val keys = factData.keys()
-                while (keys.hasNext()) {
-                    val k = keys.next()
-                    val kNorm = k.toLongOrNull()?.let { normalizeTimestamp(it) }
-                    if (kNorm == normToday) {
-                        dayObj = factData.optJSONObject(k)
-                        break
-                    }
-                }
-            }
-            if (dayObj != null) {
-                val q = findQueueInObject(dayObj, queueName)
-                if (q != null) return q
-            }
-        }
-
-        // 2. Variant B: Check other available dates in descending order (e.g. Uzhhorod)
         val availableDates = mutableListOf<Pair<Long, JSONObject>>()
         val keys = factData.keys()
         while (keys.hasNext()) {
@@ -139,6 +117,38 @@ object ScheduleParser {
         }
         availableDates.sortByDescending { it.first }
 
+        // 1. Check for a newer complete schedule update (> fact.today) published in fact.data
+        if (normToday > 0L) {
+            for ((ts, dObj) in availableDates) {
+                if (ts > normToday) {
+                    val q = findQueueInObject(dObj, queueName)
+                    if (q != null && getHourlyStatuses(q) != null) return q
+                }
+            }
+        }
+
+        // 2. Variant A: Try today's date if provided
+        if (normToday > 0L) {
+            val todayKey = normToday.toString()
+            var dayObj = factData.optJSONObject(todayKey)
+            if (dayObj == null) {
+                val keysToday = factData.keys()
+                while (keysToday.hasNext()) {
+                    val k = keysToday.next()
+                    val kNorm = k.toLongOrNull()?.let { normalizeTimestamp(it) }
+                    if (kNorm == normToday) {
+                        dayObj = factData.optJSONObject(k)
+                        break
+                    }
+                }
+            }
+            if (dayObj != null) {
+                val q = findQueueInObject(dayObj, queueName)
+                if (q != null) return q
+            }
+        }
+
+        // 3. Variant B: Check other available dates in descending order (e.g. Uzhhorod)
         for ((_, dObj) in availableDates) {
             val q = findQueueInObject(dObj, queueName)
             if (q != null) return q
@@ -293,7 +303,35 @@ object ScheduleParser {
         todayTimestamp: Long,
         queueName: String
     ): ResolvedScheduleQueue? {
-        // --- Variant A: Search for today in fact.data ---
+        val availableDates = mutableListOf<Pair<Long, JSONObject>>()
+        if (factData != null && factData.length() > 0) {
+            val keys = factData.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                val kLong = k.toLongOrNull()
+                if (kLong != null) {
+                    val obj = factData.optJSONObject(k)
+                    if (obj != null) {
+                        availableDates.add(Pair(normalizeTimestamp(kLong), obj))
+                    }
+                }
+            }
+            availableDates.sortByDescending { it.first }
+        }
+
+        // --- 1. Newer complete schedule published in fact.data (> fact.today, e.g. evening update for next day) ---
+        if (todayTimestamp > 0L) {
+            for ((ts, dateObj) in availableDates) {
+                if (ts > todayTimestamp) {
+                    val q = findQueueInObject(dateObj, queueName)
+                    if (q != null && getHourlyStatuses(q) != null) {
+                        return ResolvedScheduleQueue(q, ts, getCurrentScheduleDate(ts))
+                    }
+                }
+            }
+        }
+
+        // --- 2. Variant A: Search for today in fact.data ---
         if (factData != null && todayTimestamp > 0L) {
             val todayKeyStr = todayTimestamp.toString()
             var todayObj = factData.optJSONObject(todayKeyStr)
@@ -317,31 +355,15 @@ object ScheduleParser {
             }
         }
 
-        // --- Variant B: Fallback date in fact.data (e.g. Uzhhorod) ---
-        if (factData != null && factData.length() > 0) {
-            val availableDates = mutableListOf<Pair<Long, JSONObject>>()
-            val keys = factData.keys()
-            while (keys.hasNext()) {
-                val k = keys.next()
-                val kLong = k.toLongOrNull()
-                if (kLong != null) {
-                    val obj = factData.optJSONObject(k)
-                    if (obj != null) {
-                        availableDates.add(Pair(normalizeTimestamp(kLong), obj))
-                    }
-                }
-            }
-            availableDates.sortByDescending { it.first }
-
-            for ((ts, dateObj) in availableDates) {
-                val q = findQueueInObject(dateObj, queueName)
-                if (q != null) {
-                    return ResolvedScheduleQueue(q, ts, getCurrentScheduleDate(ts))
-                }
+        // --- 3. Variant B: Fallback date in fact.data (e.g. Uzhhorod) ---
+        for ((ts, dateObj) in availableDates) {
+            val q = findQueueInObject(dateObj, queueName)
+            if (q != null) {
+                return ResolvedScheduleQueue(q, ts, getCurrentScheduleDate(ts))
             }
         }
 
-        // --- Variant C: Root level queue ---
+        // --- 4. Variant C: Root level queue ---
         val rootQueue = findQueueInObject(root, queueName)
         if (rootQueue != null) {
             val dateInfo = resolveDateAndTimestamp(root, fact, todayTimestamp)
@@ -605,31 +627,34 @@ object ScheduleParser {
                     val todayTs = if (rawToday > 0L) normalizeTimestamp(rawToday) else 0L
 
                     if (factData != null) {
-                        // Check today object first
-                        var todayObj = if (todayTs > 0L) factData.optJSONObject(todayTs.toString()) else null
-                        if (todayObj == null && todayTs > 0L) {
-                            val dKeys = factData.keys()
-                            while (dKeys.hasNext()) {
-                                val dk = dKeys.next()
-                                val dkNorm = dk.toLongOrNull()?.let { normalizeTimestamp(it) }
-                                if (dkNorm == todayTs) {
-                                    todayObj = factData.optJSONObject(dk)
-                                    break
-                                }
+                        val datePairs = mutableListOf<Pair<Long, JSONObject>>()
+                        val dKeysAll = factData.keys()
+                        while (dKeysAll.hasNext()) {
+                            val dk = dKeysAll.next()
+                            val dkLong = dk.toLongOrNull()
+                            val obj = factData.optJSONObject(dk)
+                            if (dkLong != null && obj != null) {
+                                datePairs.add(Pair(normalizeTimestamp(dkLong), obj))
                             }
                         }
+                        datePairs.sortByDescending { it.first }
 
-                        if (todayObj != null) {
-                            val qKeys = todayObj.keys()
+                        // Prefer newest date if > todayTs, else todayObj
+                        val targetObj = datePairs.firstOrNull { it.first > todayTs && it.second.length() > 0 }?.second
+                            ?: datePairs.firstOrNull { it.first == todayTs }?.second
+                            ?: datePairs.firstOrNull()?.second
+
+                        if (targetObj != null) {
+                            val qKeys = targetObj.keys()
                             while (qKeys.hasNext()) {
                                 val q = qKeys.next()
-                                if (isQueueKey(q, todayObj.opt(q))) {
+                                if (isQueueKey(q, targetObj.opt(q))) {
                                     result.add(q)
                                 }
                             }
                         }
 
-                        // If today had no queues, check all available dates in fact.data
+                        // If still empty, scan all date keys
                         if (result.isEmpty()) {
                             val dateKeys = factData.keys()
                             while (dateKeys.hasNext()) {

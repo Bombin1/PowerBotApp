@@ -76,15 +76,32 @@ object GitHubUpdater {
         return false
     }
 
-    fun buildFallbackApkCandidates(tagName: String): List<String> {
+    fun appendCacheBuster(urlString: String, timestampMs: Long = System.currentTimeMillis()): String {
+        if (urlString.contains("X-Amz-", ignoreCase = true) || urlString.contains("_ts=")) {
+            return urlString
+        }
+        val separator = if (urlString.contains("?")) "&" else "?"
+        return "${urlString}${separator}_ts=$timestampMs"
+    }
+
+    fun buildFallbackApkCandidates(tagName: String, preferMain: Boolean = false): List<String> {
         val cleanTag = tagName.trim()
         val candidates = mutableListOf<String>()
-        if (cleanTag.isNotBlank()) {
-            candidates.add("$RAW_BASE_URL/$cleanTag/PowerBot.apk")
-            candidates.add("$RAW_BASE_URL/$cleanTag/app-debug.apk")
+        if (preferMain) {
+            candidates.add("$RAW_BASE_URL/main/PowerBot.apk")
+            candidates.add("$RAW_BASE_URL/main/app-debug.apk")
+            if (cleanTag.isNotBlank()) {
+                candidates.add("$RAW_BASE_URL/$cleanTag/PowerBot.apk")
+                candidates.add("$RAW_BASE_URL/$cleanTag/app-debug.apk")
+            }
+        } else {
+            if (cleanTag.isNotBlank()) {
+                candidates.add("$RAW_BASE_URL/$cleanTag/PowerBot.apk")
+                candidates.add("$RAW_BASE_URL/$cleanTag/app-debug.apk")
+            }
+            candidates.add("$RAW_BASE_URL/main/PowerBot.apk")
+            candidates.add("$RAW_BASE_URL/main/app-debug.apk")
         }
-        candidates.add("$RAW_BASE_URL/main/PowerBot.apk")
-        candidates.add("$RAW_BASE_URL/main/app-debug.apk")
         return candidates.distinct()
     }
 
@@ -132,32 +149,63 @@ object GitHubUpdater {
     }
 
     private fun probeApkUrl(urlString: String): Long? {
+        val freshUrl = appendCacheBuster(urlString)
         var connection: HttpURLConnection? = null
-        return try {
-            val url = URL(urlString)
-            connection = (url.openConnection() as HttpURLConnection).apply {
+        try {
+            connection = (URL(freshUrl).openConnection() as HttpURLConnection).apply {
                 requestMethod = "HEAD"
                 instanceFollowRedirects = true
+                useCaches = false
                 connectTimeout = 8000
                 readTimeout = 8000
+                setRequestProperty("Cache-Control", "no-cache, no-store, must-revalidate")
+                setRequestProperty("Pragma", "no-cache")
                 setRequestProperty("User-Agent", "PowerBot-Android/${BuildConfig.VERSION_NAME}")
             }
             val code = connection.responseCode
             if (code in 200..299) {
                 val len = connection.getHeaderField("Content-Length")?.toLongOrNull() ?: connection.contentLength.toLong()
+                if (len <= 0L || len > 100_000L) return len.coerceAtLeast(0L)
+            }
+        } catch (_: Exception) {
+        } finally {
+            connection?.disconnect()
+        }
+
+        // Fallback to ranged GET if CDN/host rejects HEAD
+        var getConn: HttpURLConnection? = null
+        return try {
+            getConn = (URL(freshUrl).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                instanceFollowRedirects = true
+                useCaches = false
+                connectTimeout = 8000
+                readTimeout = 8000
+                setRequestProperty("Range", "bytes=0-0")
+                setRequestProperty("Cache-Control", "no-cache, no-store, must-revalidate")
+                setRequestProperty("Pragma", "no-cache")
+                setRequestProperty("User-Agent", "PowerBot-Android/${BuildConfig.VERSION_NAME}")
+            }
+            val code = getConn.responseCode
+            if (code in 200..299) {
+                val rangeTotal = getConn.getHeaderField("Content-Range")
+                    ?.substringAfter("/", "")
+                    ?.trim()
+                    ?.toLongOrNull()
+                val len = rangeTotal ?: (getConn.getHeaderField("Content-Length")?.toLongOrNull() ?: getConn.contentLength.toLong())
                 if (len <= 0L || len > 100_000L) len.coerceAtLeast(0L) else null
             } else {
                 null
             }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             null
         } finally {
-            connection?.disconnect()
+            getConn?.disconnect()
         }
     }
 
-    private fun resolveRepoApk(tagName: String): Triple<String, String, Long>? {
-        for (candidate in buildFallbackApkCandidates(tagName)) {
+    private fun resolveRepoApk(tagName: String, preferMain: Boolean = false): Triple<String, String, Long>? {
+        for (candidate in buildFallbackApkCandidates(tagName, preferMain = preferMain)) {
             val size = probeApkUrl(candidate)
             if (size != null) {
                 val verSuffix = tagName.ifBlank { "latest" }
@@ -175,10 +223,14 @@ object GitHubUpdater {
     private fun fetchMainBranchVersion(): String? {
         var connection: HttpURLConnection? = null
         return try {
-            connection = (URL(MAIN_GRADLE_URL).openConnection() as HttpURLConnection).apply {
+            val freshUrl = appendCacheBuster(MAIN_GRADLE_URL)
+            connection = (URL(freshUrl).openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
+                useCaches = false
                 connectTimeout = 8000
                 readTimeout = 8000
+                setRequestProperty("Cache-Control", "no-cache, no-store, must-revalidate")
+                setRequestProperty("Pragma", "no-cache")
                 setRequestProperty("User-Agent", "PowerBot-Android/${BuildConfig.VERSION_NAME}")
             }
             if (connection.responseCode in 200..299) {
@@ -197,12 +249,15 @@ object GitHubUpdater {
     suspend fun fetchLatestRelease(): Result<GitHubRelease> = withContext(Dispatchers.IO) {
         var connection: HttpURLConnection? = null
         try {
-            val url = URL(RELEASES_API_URL)
+            val url = URL(appendCacheBuster(RELEASES_API_URL))
             connection = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
+                useCaches = false
                 connectTimeout = 15000
                 readTimeout = 15000
                 setRequestProperty("Accept", "application/vnd.github+json")
+                setRequestProperty("Cache-Control", "no-cache, no-store, must-revalidate")
+                setRequestProperty("Pragma", "no-cache")
                 setRequestProperty("User-Agent", "PowerBot-Android/${BuildConfig.VERSION_NAME}")
             }
 
@@ -214,18 +269,25 @@ object GitHubUpdater {
                 null
             }
 
-            // Fallback: check if main branch has a newer version (e.g. if release wasn't tagged yet)
+            // Check main branch version; prioritize main/PowerBot.apk if main >= latest release
             val mainVersion = fetchMainBranchVersion()
-            if (mainVersion != null && (release == null || isNewerVersion(mainVersion, release.versionName))) {
+            if (mainVersion != null && (release == null || isNewerVersion(mainVersion, release.versionName) || mainVersion == release.versionName)) {
+                val targetTag = if (release != null && mainVersion == release.versionName && release.tagName.isNotBlank()) {
+                    release.tagName
+                } else {
+                    "v$mainVersion"
+                }
+                val mainApk = resolveRepoApk(targetTag, preferMain = true)
+                val isSameAsRelease = release != null && mainVersion == release.versionName
                 release = GitHubRelease(
-                    tagName = "v$mainVersion",
+                    tagName = targetTag,
                     versionName = mainVersion,
-                    releaseName = "PowerBot v$mainVersion",
-                    changelog = release?.changelog ?: "Оновлення додатка з гілки main на GitHub.",
-                    htmlUrl = RELEASES_PAGE_URL,
-                    apkDownloadUrl = null,
-                    apkFileName = null,
-                    apkSizeBytes = 0L
+                    releaseName = if (isSameAsRelease) release!!.releaseName else "PowerBot v$mainVersion",
+                    changelog = release?.changelog?.takeIf { it.isNotBlank() } ?: "Оновлення додатка з гілки main на GitHub.",
+                    htmlUrl = if (isSameAsRelease) release!!.htmlUrl else RELEASES_PAGE_URL,
+                    apkDownloadUrl = mainApk?.first ?: if (isSameAsRelease) release?.apkDownloadUrl else null,
+                    apkFileName = mainApk?.second ?: if (isSameAsRelease) release?.apkFileName else null,
+                    apkSizeBytes = mainApk?.third ?: if (isSameAsRelease) (release?.apkSizeBytes ?: 0L) else 0L
                 )
             }
 
@@ -234,9 +296,9 @@ object GitHubUpdater {
                 return@withContext Result.failure(Exception("Помилка GitHub API ($code): $err"))
             }
 
-            // If GitHub release has no attached .apk asset, automatically resolve PowerBot.apk / app-debug.apk from the repo
+            // If GitHub release still has no attached .apk asset, automatically resolve PowerBot.apk / app-debug.apk from the repo
             if (release.apkDownloadUrl.isNullOrBlank()) {
-                val resolved = resolveRepoApk(release.tagName)
+                val resolved = resolveRepoApk(release.tagName, preferMain = false)
                 if (resolved != null) {
                     release = release.copy(
                         apkDownloadUrl = resolved.first,
@@ -262,15 +324,18 @@ object GitHubUpdater {
     ): Result<File> = withContext(Dispatchers.IO) {
         var connection: HttpURLConnection? = null
         try {
-            var currentUrl = downloadUrl
+            var currentUrl = appendCacheBuster(downloadUrl)
             var redirects = 0
             while (redirects < 5) {
                 connection?.disconnect()
                 connection = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
                     requestMethod = "GET"
                     instanceFollowRedirects = false
+                    useCaches = false
                     connectTimeout = 20000
                     readTimeout = 30000
+                    setRequestProperty("Cache-Control", "no-cache, no-store, must-revalidate")
+                    setRequestProperty("Pragma", "no-cache")
                     setRequestProperty("User-Agent", "PowerBot-Android/${BuildConfig.VERSION_NAME}")
                 }
                 val code = connection.responseCode

@@ -169,7 +169,7 @@ object TelegramClient {
         var res = postJson(urlString, buildPayload(useMarkdown = true))
         if (res.isFailure) {
             val errMsg = res.exceptionOrNull()?.message ?: ""
-            if (errMsg.contains("400") && errMsg.contains("parse", ignoreCase = true)) {
+            if (errMsg.contains("400") && (errMsg.contains("parse", ignoreCase = true) || errMsg.contains("entity", ignoreCase = true))) {
                 res = postJson(urlString, buildPayload(useMarkdown = false))
             }
         }

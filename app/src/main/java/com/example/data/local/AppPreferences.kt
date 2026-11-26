@@ -248,48 +248,90 @@ class AppPreferences(context: Context) {
         get() = prefs.getBoolean("telegram_first_run_notified", false)
         set(value) = prefs.edit().putBoolean("telegram_first_run_notified", value).apply()
 
+    var lastScheduleCheckTimeMs: Long
+        get() = prefs.getLong("last_schedule_check_time_ms", 0L)
+        set(value) = prefs.edit().putLong("last_schedule_check_time_ms", value).apply()
+
+    fun getSlotScheduleSnapshot(slotKey: String): com.example.data.model.ScheduleSnapshot? {
+        val prefKey = "slot_schedule_snapshot_$slotKey"
+        val json = prefs.getString(prefKey, "") ?: ""
+        if (json.isNotBlank()) {
+            return parseSnapshotJson(json)
+        }
+        // Migrate from legacy single lastScheduleSnapshot if queue matches
+        val legacy = lastScheduleSnapshot
+        if (legacy != null) {
+            val slotQueue = slotKey.substringAfter("::", slotKey)
+            if (legacy.queueName == slotQueue) {
+                return legacy
+            }
+        }
+        return null
+    }
+
+    fun setSlotScheduleSnapshot(slotKey: String, value: com.example.data.model.ScheduleSnapshot?) {
+        val prefKey = "slot_schedule_snapshot_$slotKey"
+        if (value == null) {
+            prefs.edit().remove(prefKey).apply()
+        } else {
+            serializeSnapshotJson(value)?.let { serialized ->
+                prefs.edit().putString(prefKey, serialized).apply()
+            }
+        }
+    }
+
     var lastScheduleSnapshot: com.example.data.model.ScheduleSnapshot?
         get() {
             val json = prefs.getString("last_schedule_snapshot", "") ?: ""
             if (json.isBlank()) return null
-            return try {
-                val obj = org.json.JSONObject(json)
-                val list = mutableListOf<String>()
-                val arr = obj.optJSONArray("hourlyStatuses")
-                if (arr != null) {
-                    for (i in 0 until arr.length()) list.add(arr.getString(i))
-                }
-                com.example.data.model.ScheduleSnapshot(
-                    regionId = obj.optString("regionId", ""),
-                    scheduleDate = obj.optString("scheduleDate", ""),
-                    todayTimestamp = obj.optLong("todayTimestamp", 0L),
-                    queueName = obj.optString("queueName", ""),
-                    hourlyStatuses = list,
-                    factUpdate = obj.optString("factUpdate", ""),
-                    lastUpdated = obj.optString("lastUpdated", "")
-                )
-            } catch (e: Exception) {
-                null
-            }
+            return parseSnapshotJson(json)
         }
         set(value) {
             if (value == null) {
                 prefs.edit().remove("last_schedule_snapshot").apply()
             } else {
-                try {
-                    val obj = org.json.JSONObject().apply {
-                        put("regionId", value.regionId)
-                        put("scheduleDate", value.scheduleDate)
-                        put("todayTimestamp", value.todayTimestamp)
-                        put("queueName", value.queueName)
-                        put("hourlyStatuses", org.json.JSONArray(value.hourlyStatuses))
-                        put("factUpdate", value.factUpdate)
-                        put("lastUpdated", value.lastUpdated)
-                    }
-                    prefs.edit().putString("last_schedule_snapshot", obj.toString()).apply()
-                } catch (e: Exception) {
-                    e.printStackTrace()
+                serializeSnapshotJson(value)?.let { serialized ->
+                    prefs.edit().putString("last_schedule_snapshot", serialized).apply()
                 }
             }
         }
+
+    private fun parseSnapshotJson(json: String): com.example.data.model.ScheduleSnapshot? {
+        return try {
+            val obj = org.json.JSONObject(json)
+            val list = mutableListOf<String>()
+            val arr = obj.optJSONArray("hourlyStatuses")
+            if (arr != null) {
+                for (i in 0 until arr.length()) list.add(arr.getString(i))
+            }
+            com.example.data.model.ScheduleSnapshot(
+                regionId = obj.optString("regionId", ""),
+                scheduleDate = obj.optString("scheduleDate", ""),
+                todayTimestamp = obj.optLong("todayTimestamp", 0L),
+                queueName = obj.optString("queueName", ""),
+                hourlyStatuses = list,
+                factUpdate = obj.optString("factUpdate", ""),
+                lastUpdated = obj.optString("lastUpdated", "")
+            )
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun serializeSnapshotJson(value: com.example.data.model.ScheduleSnapshot): String? {
+        return try {
+            org.json.JSONObject().apply {
+                put("regionId", value.regionId)
+                put("scheduleDate", value.scheduleDate)
+                put("todayTimestamp", value.todayTimestamp)
+                put("queueName", value.queueName)
+                put("hourlyStatuses", org.json.JSONArray(value.hourlyStatuses))
+                put("factUpdate", value.factUpdate)
+                put("lastUpdated", value.lastUpdated)
+            }.toString()
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
 }

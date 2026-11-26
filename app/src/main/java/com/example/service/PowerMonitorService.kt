@@ -11,6 +11,8 @@ import com.example.BuildConfig
 import com.example.data.local.AppDatabase
 import com.example.data.local.AppPreferences
 import com.example.data.model.PowerEvent
+import com.example.data.model.ScheduleParseResult
+import com.example.data.model.SelectedScheduleSlot
 import com.example.data.remote.OutageSources
 import com.example.data.remote.ScheduleParser
 import com.example.data.remote.TelegramClient
@@ -29,6 +31,8 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -40,6 +44,7 @@ class PowerMonitorService : Service() {
     private lateinit var database: AppDatabase
     private var wakeLock: PowerManager.WakeLock? = null
     private var scheduleCheckJob: Job? = null
+    private val scheduleCheckMutex = Mutex()
     private var telegramSupervisorJob: Job? = null
     private var telegramPollingJob: Job? = null
     private var activePollingToken: String = ""
@@ -95,6 +100,11 @@ class PowerMonitorService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         handleBatteryUpdate(this)
         startTelegramPolling()
+        if (intent?.action == ACTION_CHECK_SCHEDULE_NOW) {
+            serviceScope.launch {
+                checkSchedulesAndNotify()
+            }
+        }
         return START_STICKY
     }
 
@@ -353,6 +363,7 @@ class PowerMonitorService : Service() {
 
                 callData == "notify_on" -> {
                     preferences.scheduleNotificationsEnabled = true
+                    serviceScope.launch { checkSchedulesAndNotify() }
                     val markup = org.json.JSONArray()
                     val cities = OutageSources.CITIES.map { it.name }
                     for (i in cities.indices step 2) {
@@ -419,6 +430,14 @@ class PowerMonitorService : Service() {
                 callData.startsWith("queue_") -> {
                     val queue = callData.removePrefix("queue_")
                     preferences.selectedQueue = queue
+                    val selectedSlot = SelectedScheduleSlot(preferences.selectedCity, queue)
+                    val currentSlots = preferences.selectedScheduleSlots
+                    if (currentSlots.size <= 1) {
+                        preferences.selectedScheduleSlots = listOf(selectedSlot)
+                    } else if (selectedSlot !in currentSlots) {
+                        preferences.selectedScheduleSlots = (currentSlots + selectedSlot).take(5)
+                    }
+                    serviceScope.launch { checkSchedulesAndNotify() }
                     val cleanQueue = queue.replace("GPV", "").replace("черга", "").trim()
                     val markup = org.json.JSONArray().apply {
                         put(org.json.JSONArray().apply {
@@ -542,25 +561,43 @@ class PowerMonitorService : Service() {
             normalizedText.contains("Графік", ignoreCase = true) || isCommand(normalizedText, "graph") || isCommand(normalizedText, "schedule") -> {
                 serviceScope.launch { TelegramClient.deleteMessage(botToken, update.chatId, update.messageId) }
 
-                val city = preferences.selectedCity
-                val queue = preferences.selectedQueue
-                val source = OutageSources.getCitySource(city)
-                val json = if (source != null) {
-                    ScheduleParser.fetchJson(source.jsonUrl) ?: preferences.cachedScheduleJson
-                } else {
-                    preferences.cachedScheduleJson
+                val slots = preferences.selectedScheduleSlots.ifEmpty {
+                    listOf(SelectedScheduleSlot(preferences.selectedCity, preferences.selectedQueue))
+                }
+                val fetchedByCity = mutableMapOf<String, String>()
+                val scheduleTexts = mutableListOf<String>()
+
+                for (slot in slots) {
+                    val json = fetchedByCity[slot.city] ?: run {
+                        val source = OutageSources.getCitySource(slot.city)
+                        val fetched = if (source != null) {
+                            ScheduleParser.fetchJson(source.jsonUrl, bypassCache = true)
+                                ?.also { preferences.setCachedCityJson(slot.city, it) }
+                                ?: preferences.getCachedCityJson(slot.city)
+                        } else {
+                            preferences.getCachedCityJson(slot.city)
+                        }
+                        if (!fetched.isNullOrBlank()) {
+                            fetchedByCity[slot.city] = fetched
+                        }
+                        fetched
+                    }
+
+                    val schedule = if (!json.isNullOrBlank()) {
+                        ScheduleParser.parseSchedule(json, slot.city, slot.queue)
+                    } else {
+                        null
+                    }
+                    if (schedule != null) {
+                        scheduleTexts.add(ScheduleParser.formatScheduleText(schedule).trim())
+                    }
                 }
 
-                val schedule = if (json.isNotBlank()) {
-                    ScheduleParser.parseSchedule(json, city, queue)
+                val scheduleText = if (scheduleTexts.isNotEmpty()) {
+                    scheduleTexts.joinToString("\n\n")
                 } else {
-                    null
-                }
-
-                val scheduleText = if (schedule != null) {
-                    ScheduleParser.formatScheduleText(schedule)
-                } else {
-                    "📅 Графік для $city ($queue) ще не завантажено або відсутній на поточну дату."
+                    val first = slots.first()
+                    "📅 Графік для ${first.city} (${first.queue}) ще не завантажено або відсутній на поточну дату."
                 }
 
                 TelegramClient.sendMessage(
@@ -664,57 +701,86 @@ class PowerMonitorService : Service() {
     private fun startPeriodicScheduleChecker() {
         scheduleCheckJob?.cancel()
         scheduleCheckJob = serviceScope.launch {
+            delay(5_000L) // Initial check shortly after service startup
             while (isActive) {
-                delay(60 * 60 * 1000L) // Check GitHub once per hour
                 try {
-                    if (preferences.scheduleNotificationsEnabled) {
-                        val city = preferences.selectedCity
-                        val queue = preferences.selectedQueue
-                        val source = OutageSources.getCitySource(city)
-                        if (source != null) {
-                            val json = ScheduleParser.fetchJson(source.jsonUrl)
-                            if (json != null) {
-                                preferences.cachedScheduleJson = json
-                                when (val parseResult = ScheduleParser.parseScheduleJson(json, city, queue)) {
-                                    is com.example.data.model.ScheduleParseResult.Success -> {
-                                        val newSnapshot = parseResult.snapshot
-                                        val oldSnapshot = preferences.lastScheduleSnapshot
-                                        val changeResult = ScheduleParser.detectScheduleChanges(oldSnapshot, newSnapshot)
-
-                                        // Persist new snapshot
-                                        ScheduleParser.saveScheduleSnapshot(preferences, newSnapshot)
-
-                                        if (changeResult.isChanged) {
-                                            val formatted = ScheduleParser.formatScheduleText(parseResult.schedule)
-                                            preferences.lastScheduleText = formatted
-
-                                            NotificationHelper.showScheduleNotification(
-                                                this@PowerMonitorService,
-                                                "⚠️ Оновлення графіка: $city ($queue)",
-                                                formatted
-                                            )
-
-                                            if (preferences.telegramEnabled && preferences.telegramBotToken.isNotBlank() && preferences.telegramChatId.isNotBlank()) {
-                                                TelegramClient.sendMessage(
-                                                    preferences.telegramBotToken,
-                                                    preferences.telegramChatId,
-                                                    "⚠️ *Графік оновлено!*\n\n$formatted",
-                                                    withKeyboard = true
-                                                )
-                                            }
-                                        }
-                                    }
-                                    is com.example.data.model.ScheduleParseResult.Failure -> {
-                                        // Do not notify on incomplete or erroneous data (Section 13)
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    checkSchedulesAndNotify()
                 } catch (e: Exception) {
                     e.printStackTrace()
                 }
+                delay(60 * 60 * 1000L) // Check GitHub once per hour
             }
+        }
+    }
+
+    private suspend fun checkSchedulesAndNotify() {
+        scheduleCheckMutex.withLock {
+            if (!preferences.scheduleNotificationsEnabled) return@withLock
+
+            val slots = preferences.selectedScheduleSlots.ifEmpty {
+                listOf(SelectedScheduleSlot(preferences.selectedCity, preferences.selectedQueue))
+            }
+
+            val jsonByCity = mutableMapOf<String, String?>()
+            for (city in slots.map { it.city }.distinct()) {
+                val source = OutageSources.getCitySource(city)
+                val fetched = if (source != null) {
+                    ScheduleParser.fetchJson(source.jsonUrl, bypassCache = true)
+                } else {
+                    null
+                }
+                if (fetched != null) {
+                    preferences.setCachedCityJson(city, fetched)
+                }
+                jsonByCity[city] = fetched
+            }
+
+            slots.forEachIndexed { index, slot ->
+                val json = jsonByCity[slot.city] ?: return@forEachIndexed
+                when (val parseResult = ScheduleParser.parseScheduleJson(json, slot.city, slot.queue)) {
+                    is ScheduleParseResult.Success -> {
+                        val newSnapshot = parseResult.snapshot
+                        val oldSnapshot = preferences.getSlotScheduleSnapshot(slot.slotKey)
+                        val changeResult = ScheduleParser.detectScheduleChanges(oldSnapshot, newSnapshot)
+
+                        // Persist per-slot snapshot (and legacy primary snapshot for backward compatibility)
+                        preferences.setSlotScheduleSnapshot(slot.slotKey, newSnapshot)
+                        if (index == 0) {
+                            ScheduleParser.saveScheduleSnapshot(preferences, newSnapshot)
+                        }
+
+                        if (changeResult.isChanged) {
+                            val formatted = ScheduleParser.formatScheduleText(parseResult.schedule)
+                            if (index == 0) {
+                                preferences.lastScheduleText = formatted
+                            }
+
+                            NotificationHelper.showScheduleNotification(
+                                this@PowerMonitorService,
+                                "⚠️ Оновлення графіка: ${slot.city} (${slot.queue})",
+                                formatted
+                            )
+
+                            if (preferences.telegramEnabled &&
+                                preferences.telegramBotToken.isNotBlank() &&
+                                preferences.telegramChatId.isNotBlank()
+                            ) {
+                                TelegramClient.sendMessage(
+                                    botToken = preferences.telegramBotToken,
+                                    chatId = preferences.telegramChatId,
+                                    text = "⚠️ *Графік оновлено!*\n\n$formatted",
+                                    withKeyboard = true
+                                )
+                            }
+                        }
+                    }
+                    is ScheduleParseResult.Failure -> {
+                        // Do not notify on incomplete or erroneous data
+                    }
+                }
+            }
+
+            preferences.lastScheduleCheckTimeMs = System.currentTimeMillis()
         }
     }
 
@@ -746,11 +812,24 @@ class PowerMonitorService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
+        const val ACTION_CHECK_SCHEDULE_NOW = "com.example.action.CHECK_SCHEDULE_NOW"
+
         private val _stateChangeEvents = MutableSharedFlow<Boolean>(extraBufferCapacity = 1)
         val stateChangeEvents: SharedFlow<Boolean> = _stateChangeEvents.asSharedFlow()
 
         fun startService(context: Context) {
             val intent = Intent(context, PowerMonitorService::class.java)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        fun triggerScheduleCheck(context: Context) {
+            val intent = Intent(context, PowerMonitorService::class.java).apply {
+                action = ACTION_CHECK_SCHEDULE_NOW
+            }
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
             } else {

@@ -16,8 +16,8 @@ android {
     applicationId = "com.aistudio.powerbot.ukrlgt"
     minSdk = 21
     targetSdk = 36
-    versionCode = 354
-    versionName = "3.5.4"
+    versionCode = 355
+    versionName = "3.5.5"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
